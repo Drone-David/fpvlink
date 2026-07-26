@@ -1,0 +1,57 @@
+{
+  "name": "fpvlink",
+  "version": "0.1.0",
+  "description": "Low-latency FPV streaming device software for Orange Pi 5 Plus (RK3588)",
+  "license": "MIT",
+  "author": "FPVLink Contributors",
+  "homepage": "https://github.com/yourorg/fpvlink",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourorg/fpvlink.git"
+  },
+  "keywords": [
+    "fpv",
+    "dji",
+    "streaming",
+    "gstreamer",
+    "rkmpp",
+    "srt",
+    "rtmp",
+    "rockchip",
+    "orange-pi"
+  ],
+
+  "engines": {
+    "node": ">=18.0.0",
+    "npm":  ">=9.0.0"
+  },
+
+  "main": "web/server.js",
+
+  "scripts": {
+    "start": "node web/server.js",
+
+    "dev":   "node --watch web/server.js",
+
+    "setup": "bash scripts/setup.sh",
+
+    "lint":  "npx eslint web/ --ext .js",
+    "test":  "node --test web/**/*.test.js"
+  },
+
+  "dependencies": {
+    "express": "^4.18.2",
+
+    "ws": "^8.16.0",
+
+    "node-pty": "^1.0.0"
+  },
+
+  "devDependencies": {
+    "eslint": "^8.56.0"
+  },
+
+  "optionalDependencies": {
+    "sd-notify": "^2.9.0"
+  }
+}

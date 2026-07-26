@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FPVLink — Streaming Dashboard</title>
+  <meta name="description" content="FPVLink low-latency FPV drone streaming device dashboard. Configure SRT/RTMP streams, monitor live stats, and control your pipeline." />
+  <meta name="theme-color" content="#0a0a0f" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div class="page-wrap">
+
+  <!-- ══════════════════════════════════════
+       HEADER
+  ══════════════════════════════════════ -->
+  <header class="site-header" role="banner">
+    <div class="logo-wrap">
+      <!-- SVG logo: drone + signal waves -->
+      <svg class="logo-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="logoGrad" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#00d4ff"/>
+            <stop offset="100%" stop-color="#a78bfa"/>
+          </linearGradient>
+          <filter id="logoGlow">
+            <feGaussianBlur stdDeviation="1.5" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <!-- Drone body -->
+        <rect x="15" y="17" width="10" height="7" rx="2" fill="url(#logoGrad)" filter="url(#logoGlow)"/>
+        <!-- Rotor arms -->
+        <line x1="15" y1="18" x2="7"  y2="13" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="25" y1="18" x2="33" y2="13" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="15" y1="23" x2="7"  y2="28" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="25" y1="23" x2="33" y2="28" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
+        <!-- Rotor circles -->
+        <circle cx="6"  cy="12" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
+        <circle cx="34" cy="12" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
+        <circle cx="6"  cy="29" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
+        <circle cx="34" cy="29" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
+        <!-- Signal arc top-right -->
+        <path d="M28 9 A8 8 0 0 1 36 17" stroke="#00d4ff" stroke-width="1.2" fill="none" stroke-linecap="round" opacity="0.7"/>
+        <path d="M30 6 A12 12 0 0 1 39 18" stroke="#00d4ff" stroke-width="1" fill="none" stroke-linecap="round" opacity="0.4"/>
+      </svg>
+      <div class="logo-text">
+        <span class="logo-title">FPVLink</span>
+        <span class="logo-sub">Low-Latency Streaming</span>
+      </div>
+    </div>
+    <div class="header-meta">
+      <span class="device-name" id="deviceName">—</span>
+      <span class="firmware-version" id="firmwareVersion">v—</span>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════════════════
+       OFFLINE BANNER
+  ══════════════════════════════════════ -->
+  <div class="offline-banner" id="offlineBanner" role="alert" aria-live="polite">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 1L1 14h14L8 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      <line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="8" cy="12.5" r="0.75" fill="currentColor"/>
+    </svg>
+    WebSocket disconnected — retrying connection…
+  </div>
+
+  <!-- ══════════════════════════════════════
+       STATUS BAR
+  ══════════════════════════════════════ -->
+  <div class="status-bar" role="status" aria-label="System status indicators">
+    <div class="status-item" id="usbStatus">
+      <span class="dot"></span>
+      <span>USB / Goggles</span>
+    </div>
+    <div class="status-item" id="pipelineStatus">
+      <span class="dot"></span>
+      <span>Pipeline</span>
+    </div>
+    <div class="status-item" id="networkStatus">
+      <span class="dot"></span>
+      <span>Stream Live</span>
+    </div>
+    <div class="uptime-badge" id="uptimeBadge" title="Stream uptime" aria-label="Uptime">
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+        <circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.2"/>
+        <path d="M5 2.5V5l1.5 1" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+      </svg>
+      <span id="uptimeText">00:00:00</span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       STATS ROW
+  ══════════════════════════════════════ -->
+  <div class="stats-row" role="region" aria-label="Live stream statistics">
+
+    <div class="stat-card">
+      <span class="stat-label">Frame Rate</span>
+      <span class="stat-value" id="statFps">0</span>
+      <span class="stat-unit">FPS</span>
+    </div>
+
+    <div class="stat-card">
+      <span class="stat-label">Bitrate</span>
+      <span class="stat-value" id="statBitrate">0.0</span>
+      <span class="stat-unit">Mbps</span>
+    </div>
+
+    <div class="stat-card">
+      <span class="stat-label">Latency</span>
+      <span class="stat-value" id="statLatency">0</span>
+      <span class="stat-unit">ms</span>
+    </div>
+
+    <div class="stat-card">
+      <span class="stat-label">Resolution</span>
+      <span class="stat-value" id="statResolution" style="font-size:1.4rem">—</span>
+      <span class="stat-unit">px</span>
+    </div>
+
+    <div class="stat-card" id="cardDropped">
+      <span class="stat-label">Dropped</span>
+      <span class="stat-value" id="statDropped">0</span>
+      <span class="stat-unit">frames</span>
+    </div>
+
+    <div class="stat-card">
+      <span class="stat-label">Received</span>
+      <span class="stat-value" id="statBytes">0</span>
+      <span class="stat-unit" id="statBytesUnit">MB</span>
+    </div>
+
+  </div>
+
+  <!-- ══════════════════════════════════════
+       LIVE PREVIEW CARD
+  ══════════════════════════════════════ -->
+  <div class="card preview-card" role="region" aria-labelledby="previewTitle" id="previewCard">
+    <div class="preview-header">
+      <h2 class="card-title" id="previewTitle">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <rect x="1" y="2" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.4"/>
+          <circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        Live Video Preview
+        <span class="preview-badge standby" id="previewBadge">STANDBY</span>
+      </h2>
+      <div class="preview-actions">
+        <button type="button" class="btn-icon active" id="hudToggleBtn" title="Toggle HUD Overlay" onclick="toggleHud()" aria-label="Toggle HUD Overlay">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="8" y1="2" x2="8" y2="5" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="8" y1="11" x2="8" y2="14" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="2" y1="8" x2="5" y2="8" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="11" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+        </button>
+        <button type="button" class="btn-icon" id="aspectBtn" title="Toggle Aspect Fit / Fill" onclick="toggleAspectFit()" aria-label="Toggle Aspect Ratio">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 6h2v2M11 10h-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <button type="button" class="btn-icon" id="snapshotBtn" title="Take Snapshot" onclick="takeSnapshot()" aria-label="Take Snapshot">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M3 5a2 2 0 012-2h1.5l1-1h1l1 1H11a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5z" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="8" cy="8.5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+        </button>
+        <button type="button" class="btn-icon" id="fullscreenBtn" title="Toggle Fullscreen" onclick="toggleFullscreen()" aria-label="Toggle Fullscreen">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M2 5V2h3M14 5V2h-3M2 11v3h3M14 11v3h-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="preview-container" id="previewContainer">
+      <img id="previewImg" class="preview-img fit-contain" src="" alt="Live stream preview" />
+      
+      <!-- HUD Overlay -->
+      <div class="preview-hud" id="previewHud">
+        <div class="hud-top">
+          <div class="hud-tag live-badge" id="hudLiveTag">● LIVE</div>
+          <div class="hud-tag" id="hudResTag">640×360</div>
+          <div class="hud-tag" id="hudFpsTag">0 FPS</div>
+          <div class="hud-tag" id="hudLatencyTag">0 ms</div>
+        </div>
+        <div class="hud-reticle">
+          <div class="reticle-crosshair"></div>
+          <div class="reticle-corners">
+            <span class="c-top-left"></span>
+            <span class="c-top-right"></span>
+            <span class="c-bottom-left"></span>
+            <span class="c-bottom-right"></span>
+          </div>
+        </div>
+        <div class="hud-bottom">
+          <span class="hud-rec-indicator" id="hudRecIndicator">● REC MP4</span>
+          <span class="hud-bitrate" id="hudBitrate">0.0 Mbps</span>
+        </div>
+      </div>
+
+      <!-- Standby / Offline Overlay -->
+      <div class="preview-standby visible" id="previewStandby">
+        <div class="standby-content">
+          <div class="standby-title" id="standbyTitle">NO STREAM DETECTED</div>
+          <div class="standby-desc" id="standbyDesc">Awaiting video frames from Goggles</div>
+        </div>
+      </div>
+
+      <!-- Signal Interrupted Overlay -->
+      <div class="preview-signal-loss" id="previewSignalLoss">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span>SIGNAL INTERRUPTED — WAITING FOR FRAMES…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       STREAM CONTROL CARD
+  ══════════════════════════════════════ -->
+  <div class="card" role="region" aria-labelledby="ctrlTitle">
+    <h2 class="card-title" id="ctrlTitle">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <polygon points="3,1 13,7 3,13" fill="currentColor"/>
+      </svg>
+      Stream Control
+    </h2>
+    <div class="stream-btn-wrap">
+      <button
+        class="btn-stream start"
+        id="streamBtn"
+        onclick="toggleStream()"
+        aria-label="Start streaming"
+      >
+        <span id="streamBtnLabel">▶ &nbsp;START STREAM</span>
+      </button>
+      <span class="stream-status-text" id="streamStatusText">Stream is <span>idle</span></span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       STREAM CONFIGURATION CARD
+  ══════════════════════════════════════ -->
+  <div class="card" role="region" aria-labelledby="configTitle">
+    <h2 class="card-title" id="configTitle">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <circle cx="7" cy="7" r="2.5" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.6 2.6l1.4 1.4M10 10l1.4 1.4M2.6 11.4l1.4-1.4M10 4l1.4-1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      </svg>
+      Stream Configuration
+    </h2>
+
+    <!-- Goggles model -->
+    <div class="form-group">
+      <label class="field-label" for="gogglesModel">Goggles Model</label>
+      <select id="gogglesModel" aria-label="Select goggles model">
+        <option value="auto">Auto Detect</option>
+        <option value="v1v2">DJI Goggles V1 / V2</option>
+        <option value="goggles2">DJI Goggles 2</option>
+        <option value="goggles3">DJI Goggles 3 / N3</option>
+      </select>
+    </div>
+
+    <!-- Bitrate slider -->
+    <div class="slider-wrap">
+      <div class="slider-header">
+        <span class="slider-label">Encode Bitrate</span>
+        <span class="slider-value"><span id="bitrateVal">50</span> Mbps</span>
+      </div>
+      <input
+        type="range"
+        id="bitrateSlider"
+        min="2" max="50" step="1" value="50"
+        aria-label="Bitrate in Mbps"
+        aria-valuemin="2" aria-valuemax="50" aria-valuenow="50"
+        oninput="updateBitrateLabel(this.value)"
+      />
+      <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--muted);margin-top:4px;">
+        <span>2 Mbps</span><span>50 Mbps</span>
+      </div>
+    </div>
+
+    <!-- SRT Toggle -->
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <span class="toggle-label">SRT Output</span>
+        <span class="toggle-desc">Stream via Secure Reliable Transport</span>
+      </div>
+      <label class="toggle-switch" for="srtEnabled" aria-label="Enable SRT output">
+        <input type="checkbox" id="srtEnabled" onchange="toggleSubField('srtEnabled','srtSub')" />
+        <span class="toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+    <div class="toggle-sub" id="srtSub">
+      <label class="field-label" for="srtUrl">SRT URL</label>
+      <input type="url" id="srtUrl" placeholder="srt://0.0.0.0:5000" aria-label="SRT stream URL" />
+    </div>
+
+    <!-- RTMP Toggle -->
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <span class="toggle-label">RTMP Output</span>
+        <span class="toggle-desc">Push to Twitch, YouTube, or custom RTMP</span>
+      </div>
+      <label class="toggle-switch" for="rtmpEnabled" aria-label="Enable RTMP output">
+        <input type="checkbox" id="rtmpEnabled" onchange="toggleSubField('rtmpEnabled','rtmpSub')" />
+        <span class="toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+    <div class="toggle-sub" id="rtmpSub">
+      <label class="field-label" for="rtmpUrl">RTMP URL</label>
+      <input type="url" id="rtmpUrl" placeholder="rtmp://live.twitch.tv/app" aria-label="RTMP server URL" />
+      <label class="field-label" for="rtmpKey">Stream Key</label>
+      <input type="password" id="rtmpKey" placeholder="••••••••••••" aria-label="RTMP stream key" autocomplete="current-password" />
+    </div>
+
+    <!-- Local Recording Toggle -->
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <span class="toggle-label">Local Recording</span>
+        <span class="toggle-desc">Save stream to device storage</span>
+      </div>
+      <label class="toggle-switch" for="recordEnabled" aria-label="Enable local recording">
+        <input type="checkbox" id="recordEnabled" />
+        <span class="toggle-track" aria-hidden="true"></span>
+      </label>
+    </div>
+
+    <!-- Save button row -->
+    <div class="config-footer">
+      <span class="save-status" id="saveStatus" role="status" aria-live="polite">✓ Saved</span>
+      <button class="btn btn-ghost" id="resetConfigBtn" onclick="loadConfig()" aria-label="Reset configuration to current saved values">
+        Reset
+      </button>
+      <button class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()" aria-label="Save configuration">
+        Save Config
+      </button>
+    </div>
+
+  </div>
+
+  <!-- ══════════════════════════════════════
+       LOG CONSOLE CARD
+  ══════════════════════════════════════ -->
+  <div class="card" style="padding: 0;" role="region" aria-labelledby="logTitle">
+    <div class="log-console">
+      <div class="log-header">
+        <span class="log-title" id="logTitle">System Logs</span>
+        <div class="log-controls" aria-hidden="true">
+          <span class="log-dot red"></span>
+          <span class="log-dot yellow"></span>
+          <span class="log-dot green"></span>
+        </div>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:0.72rem;" onclick="clearLogs()" aria-label="Clear log console">Clear</button>
+      </div>
+      <div class="log-body" id="logBody" role="log" aria-label="System log output" aria-live="polite" aria-atomic="false">
+        <span class="log-line info">[FPVLink] Connecting to device…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       FOOTER
+  ══════════════════════════════════════ -->
+  <footer class="site-footer" role="contentinfo">
+    <span class="footer-left">FPVLink &copy; 2025 — Orange Pi 5 Plus</span>
+    <nav class="footer-right" aria-label="Footer links">
+      <a class="footer-link" href="https://github.com/fpvlink/fpvlink" target="_blank" rel="noopener noreferrer" aria-label="FPVLink on GitHub">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M7 1C3.69 1 1 3.69 1 7c0 2.65 1.72 4.9 4.1 5.69.3.06.41-.13.41-.29v-1.02c-1.67.36-2.02-.8-2.02-.8-.27-.69-.67-.87-.67-.87-.55-.37.04-.36.04-.36.6.04.92.62.92.62.54.92 1.4.65 1.75.5.05-.39.21-.65.38-.8-1.33-.15-2.73-.67-2.73-2.97 0-.66.23-1.19.62-1.61-.06-.15-.27-.76.06-1.59 0 0 .51-.16 1.67.62A5.84 5.84 0 017 3.8c.52 0 1.04.07 1.53.2 1.15-.78 1.66-.62 1.66-.62.33.83.12 1.44.06 1.59.39.42.62.95.62 1.61 0 2.31-1.4 2.82-2.74 2.97.22.19.41.56.41 1.12v1.67c0 .16.11.35.41.29C11.28 11.9 13 9.65 13 7c0-3.31-2.69-6-6-6z" fill="currentColor"/>
+        </svg>
+        GitHub
+      </a>
+      <span class="footer-left" id="footerVersion">v1.0.0</span>
+    </nav>
+  </footer>
+
+</div><!-- /.page-wrap -->
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   FPVLink Dashboard — Client JS
+   Handles: WebSocket, REST API, UI state, config form
+═══════════════════════════════════════════════════════════ */
+
+'use strict';
+
+// ─────────────────────────────────────────────
+// Constants & state
+// ─────────────────────────────────────────────
+const WS_URL      = `ws://${location.hostname}:${location.port || 8080}/ws`;
+const API         = (path) => `/api${path}`;
+const LOG_MAX     = 100;
+const RECONNECT_MS = 3000;
+
+let ws           = null;
+let wsRetryTimer = null;
+let isStreaming  = false;
+let uptimeStart  = null;
+let uptimeTimer  = null;
+let lastFrameTime = 0;
+let lastDroppedFrames = 0;
+let droppedWarnTimer = null;
+
+// ─────────────────────────────────────────────
+// DOM refs
+// ─────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+
+const el = {
+  previewCard:       $('previewCard'),
+  previewContainer:  $('previewContainer'),
+  previewImg:        $('previewImg'),
+  previewBadge:      $('previewBadge'),
+  previewHud:        $('previewHud'),
+  previewStandby:    $('previewStandby'),
+  previewSignalLoss: $('previewSignalLoss'),
+  standbyTitle:      $('standbyTitle'),
+  standbyDesc:       $('standbyDesc'),
+  hudLiveTag:        $('hudLiveTag'),
+  hudResTag:         $('hudResTag'),
+  hudFpsTag:         $('hudFpsTag'),
+  hudLatencyTag:     $('hudLatencyTag'),
+  hudRecIndicator:   $('hudRecIndicator'),
+  hudBitrate:        $('hudBitrate'),
+  hudToggleBtn:      $('hudToggleBtn'),
+  aspectBtn:         $('aspectBtn'),
+  usbStatus:         $('usbStatus'),
+  pipelineStatus:    $('pipelineStatus'),
+  networkStatus:     $('networkStatus'),
+  uptimeBadge:       $('uptimeBadge'),
+  uptimeText:        $('uptimeText'),
+  statFps:           $('statFps'),
+  statBitrate:       $('statBitrate'),
+  statLatency:       $('statLatency'),
+  statResolution:    $('statResolution'),
+  statDropped:       $('statDropped'),
+  cardDropped:       $('cardDropped'),
+  statBytes:         $('statBytes'),
+  statBytesUnit:     $('statBytesUnit'),
+  streamBtn:         $('streamBtn'),
+  streamBtnLabel:    $('streamBtnLabel'),
+  streamStatusText:  $('streamStatusText'),
+  offlineBanner:     $('offlineBanner'),
+  logBody:           $('logBody'),
+  saveStatus:        $('saveStatus'),
+  deviceName:        $('deviceName'),
+  firmwareVersion:   $('firmwareVersion'),
+  footerVersion:     $('footerVersion'),
+
+  // Config form fields
+  gogglesModel:  $('gogglesModel'),
+  bitrateSlider: $('bitrateSlider'),
+  bitrateVal:    $('bitrateVal'),
+  srtEnabled:    $('srtEnabled'),
+  srtUrl:        $('srtUrl'),
+  rtmpEnabled:   $('rtmpEnabled'),
+  rtmpUrl:       $('rtmpUrl'),
+  rtmpKey:       $('rtmpKey'),
+  recordEnabled: $('recordEnabled'),
+};
+
+// ─────────────────────────────────────────────
+// WebSocket
+// ─────────────────────────────────────────────
+function connectWS() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  ws = new WebSocket(WS_URL);
+
+  ws.addEventListener('open', () => {
+    hideOfflineBanner();
+    appendLog('[ws] Connected to FPVLink device', 'ok');
+    clearTimeout(wsRetryTimer);
+  });
+
+  ws.addEventListener('message', (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === 'stats')     handleStats(msg);
+    if (msg.type === 'log')       appendLog(msg.line);
+    if (msg.type === 'log_batch') msg.lines.forEach((l) => appendLog(l));
+    if (msg.type === 'preview')   handlePreview(msg);
+  });
+
+  function handlePreview(msg) {
+    if (!isStreaming) return;
+    lastFrameTime = Date.now();
+    el.previewImg.src = 'data:image/jpeg;base64,' + msg.frame;
+    el.previewStandby.classList.remove('visible');
+    el.previewSignalLoss.classList.remove('visible');
+    el.previewBadge.textContent = 'LIVE';
+    el.previewBadge.className = 'preview-badge live';
+    if (el.previewImg.naturalWidth && el.previewImg.naturalHeight) {
+      el.hudResTag.textContent = `${el.previewImg.naturalWidth}×${el.previewImg.naturalHeight}`;
+    }
+  }
+
+  ws.addEventListener('close', () => {
+    showOfflineBanner();
+    wsRetryTimer = setTimeout(connectWS, RECONNECT_MS);
+  });
+
+  ws.addEventListener('error', () => {
+    ws.close();
+  });
+}
+
+function showOfflineBanner() {
+  el.offlineBanner.classList.add('visible');
+}
+
+function hideOfflineBanner() {
+  el.offlineBanner.classList.remove('visible');
+}
+
+// ─────────────────────────────────────────────
+// Stats update
+// ─────────────────────────────────────────────
+function handleStats(s) {
+  // FPS
+  const fps = parseFloat(s.fps || 0);
+  el.statFps.textContent = fps.toFixed(0);
+  el.statFps.classList.toggle('live', s.streaming && fps > 0);
+
+  // Bitrate
+  const mbps = (s.bitrate_kbps / 1000).toFixed(1);
+  el.statBitrate.textContent = mbps;
+  el.statBitrate.classList.toggle('live', s.streaming && s.bitrate_kbps > 0);
+
+  // Latency
+  el.statLatency.textContent = Math.round(s.latency_ms || 0);
+  el.statLatency.classList.toggle('live', s.streaming && s.latency_ms > 0);
+
+  // Resolution
+  el.statResolution.textContent = s.resolution || '—';
+  el.statResolution.classList.toggle('live', s.streaming && s.resolution && s.resolution !== '—');
+
+  // Dropped frames
+  const dropped = parseInt(s.dropped_frames || 0, 10);
+  if (s.streaming) {
+    if (dropped > lastDroppedFrames) {
+      const diff = dropped - lastDroppedFrames;
+      // If frames are dropping rapidly, trigger warning state
+      if (diff > 0) {
+        el.cardDropped.classList.add('warn-state');
+        clearTimeout(droppedWarnTimer);
+        // Remove warning after 2 seconds of no new drops
+        droppedWarnTimer = setTimeout(() => {
+          el.cardDropped.classList.remove('warn-state');
+        }, 2000);
+      }
+    }
+  } else {
+    el.cardDropped.classList.remove('warn-state');
+    lastDroppedFrames = 0;
+  }
+  lastDroppedFrames = dropped;
+  el.statDropped.textContent = dropped;
+  el.statDropped.classList.toggle('live', s.streaming && dropped === 0); // Active color when healthy
+
+  // Bytes received — auto-scale to MB / GB
+  const bytes = s.bytes_received || 0;
+  if (bytes >= 1e9) {
+    el.statBytes.textContent     = (bytes / 1e9).toFixed(2);
+    el.statBytesUnit.textContent = 'GB';
+  } else {
+    el.statBytes.textContent     = (bytes / 1e6).toFixed(1);
+    el.statBytesUnit.textContent = 'MB';
+  }
+
+  // Update HUD text overlay tags
+  if (el.hudFpsTag)     el.hudFpsTag.textContent     = `${Math.round(fps)} FPS`;
+  if (el.hudLatencyTag) el.hudLatencyTag.textContent = `${Math.round(s.latency_ms || 0)} ms`;
+  if (el.hudBitrate)    el.hudBitrate.textContent    = `${mbps} Mbps`;
+  if (el.hudRecIndicator && el.recordEnabled) {
+    el.hudRecIndicator.style.display = el.recordEnabled.checked ? 'inline-flex' : 'none';
+  }
+
+  // USB status indicator
+  const usbConn = s.usb_status === 'connected';
+  setStatus(el.usbStatus, usbConn ? 'active' : '');
+
+  // Pipeline & network tied to streaming flag
+  const live = !!s.streaming;
+  setStatus(el.pipelineStatus, live ? 'active' : '');
+  setStatus(el.networkStatus,  live ? 'active' : '');
+
+  // Stream button state sync
+  if (live !== isStreaming) {
+    isStreaming = live;
+    updateStreamBtn(isStreaming);
+  }
+
+  // Uptime
+  if (live && s.uptime_seconds > 0) {
+    el.uptimeText.textContent = formatUptime(s.uptime_seconds);
+  } else if (!live) {
+    el.uptimeText.textContent = '00:00:00';
+  }
+}
+
+function setStatus(el, cls) {
+  el.className = 'status-item' + (cls ? ' ' + cls : '');
+}
+
+function formatUptime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return [h, m, s].map((v) => String(v).padStart(2, '0')).join(':');
+}
+
+// ─────────────────────────────────────────────
+// Stream control
+// ─────────────────────────────────────────────
+async function toggleStream() {
+  const endpoint = isStreaming ? '/stream/stop' : '/stream/start';
+  el.streamBtn.disabled = true;
+
+  try {
+    const res  = await fetch(API(endpoint), { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || 'Request failed');
+    isStreaming = !isStreaming;
+    updateStreamBtn(isStreaming);
+  } catch (err) {
+    appendLog(`[error] Stream toggle failed: ${err.message}`, 'error');
+  } finally {
+    el.streamBtn.disabled = false;
+  }
+}
+
+function updateStreamBtn(streaming) {
+  if (streaming) {
+    el.streamBtn.className        = 'btn-stream stop';
+    el.streamBtn.ariaLabel        = 'Stop streaming';
+    el.streamBtnLabel.innerHTML   = '■ &nbsp;STOP STREAM';
+    el.streamStatusText.innerHTML = 'Stream is <span>LIVE</span>';
+    el.previewBadge.textContent   = 'CONNECTING…';
+    el.previewBadge.className     = 'preview-badge live';
+    el.standbyTitle.textContent   = 'NO STREAM DETECTED';
+    el.standbyDesc.textContent    = 'Connecting handshake…';
+  } else {
+    el.streamBtn.className        = 'btn-stream start';
+    el.streamBtn.ariaLabel        = 'Start streaming';
+    el.streamBtnLabel.innerHTML   = '▶ &nbsp;START STREAM';
+    el.streamStatusText.innerHTML = 'Stream is <span>idle</span>';
+    el.previewCard.style.display  = 'block';
+    el.previewImg.src             = '';
+    el.previewStandby.classList.add('visible');
+    el.previewSignalLoss.classList.remove('visible');
+    el.previewBadge.textContent   = 'STANDBY';
+    el.previewBadge.className     = 'preview-badge standby';
+    el.standbyTitle.textContent   = 'NO STREAM DETECTED';
+    el.standbyDesc.innerHTML      = 'Awaiting video frames from Goggles';
+    lastFrameTime = 0;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Config — load
+// ─────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const [cfgRes, statRes] = await Promise.all([
+      fetch(API('/config')),
+      fetch(API('/status')),
+    ]);
+    const cfg  = await cfgRes.json();
+    const stat = await statRes.json();
+
+    // Populate form
+    el.gogglesModel.value   = cfg.goggles_model   || 'auto';
+    el.bitrateSlider.value  = cfg.bitrate_mbps     || 50;
+    el.bitrateVal.textContent = cfg.bitrate_mbps   || 50;
+    el.srtEnabled.checked   = !!cfg.srt_enabled;
+    el.srtUrl.value         = cfg.srt_url          || '';
+    el.rtmpEnabled.checked  = !!cfg.rtmp_enabled;
+    el.rtmpUrl.value        = cfg.rtmp_url         || '';
+    el.rtmpKey.value        = cfg.rtmp_key         || '';
+    el.recordEnabled.checked= !!cfg.record_enabled;
+
+    // Show/hide sub-fields based on toggle state
+    toggleSubField('srtEnabled',  'srtSub',  true);
+    toggleSubField('rtmpEnabled', 'rtmpSub', true);
+
+    // Header meta
+    el.deviceName.textContent    = stat.device_name      || cfg.device_name    || 'FPVLink';
+    el.firmwareVersion.textContent = 'v' + (stat.firmware_version || cfg.firmware_version || '1.0.0');
+    el.footerVersion.textContent   = 'v' + (stat.firmware_version || cfg.firmware_version || '1.0.0');
+
+    // Init streaming state
+    isStreaming = !!stat.streaming;
+    updateStreamBtn(isStreaming);
+
+    appendLog('[config] Configuration loaded', 'ok');
+  } catch (err) {
+    appendLog(`[error] Failed to load config: ${err.message}`, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────
+// Config — save
+// ─────────────────────────────────────────────
+async function saveConfig() {
+  const payload = {
+    goggles_model:   el.gogglesModel.value,
+    bitrate_mbps:    parseInt(el.bitrateSlider.value, 10),
+    srt_enabled:     el.srtEnabled.checked,
+    srt_url:         el.srtUrl.value.trim(),
+    rtmp_enabled:    el.rtmpEnabled.checked,
+    rtmp_url:        el.rtmpUrl.value.trim(),
+    rtmp_key:        el.rtmpKey.value,
+    record_enabled:  el.recordEnabled.checked,
+  };
+
+  const btn = $('saveConfigBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    const res  = await fetch(API('/config'), {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error((body.details || [body.error]).join(', '));
+
+    // Flash "Saved" indicator
+    el.saveStatus.classList.add('visible');
+    setTimeout(() => el.saveStatus.classList.remove('visible'), 2500);
+    appendLog('[config] Configuration saved', 'ok');
+  } catch (err) {
+    appendLog(`[error] Save failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Save Config';
+  }
+}
+
+// ─────────────────────────────────────────────
+// UI helpers
+// ─────────────────────────────────────────────
+function toggleSubField(checkboxId, subId, silent) {
+  const cb  = $(checkboxId);
+  const sub = $(subId);
+  if (!cb || !sub) return;
+  if (cb.checked) {
+    sub.classList.add('visible');
+  } else {
+    sub.classList.remove('visible');
+  }
+}
+
+function updateBitrateLabel(val) {
+  el.bitrateVal.textContent = val;
+  el.bitrateSlider.setAttribute('aria-valuenow', val);
+  // Dynamically color the slider fill
+  const pct = ((val - 2) / (25 - 2)) * 100;
+  el.bitrateSlider.style.background =
+    `linear-gradient(to right, var(--accent) ${pct}%, var(--muted2) ${pct}%)`;
+}
+
+// ─────────────────────────────────────────────
+// Log console
+// ─────────────────────────────────────────────
+let logLineCount = 0;
+
+function appendLog(rawLine, forceClass) {
+  const line = String(rawLine);
+  const cls  = forceClass || detectLogClass(line);
+
+  const span = document.createElement('span');
+  span.className = `log-line ${cls}`;
+  span.textContent = line;
+
+  el.logBody.appendChild(span);
+  el.logBody.appendChild(document.createTextNode('\n'));
+
+  logLineCount++;
+  // Trim old lines
+  while (logLineCount > LOG_MAX) {
+    if (el.logBody.firstChild) {
+      el.logBody.removeChild(el.logBody.firstChild);
+      // Remove accompanying newline
+      if (el.logBody.firstChild?.nodeType === 3) {
+        el.logBody.removeChild(el.logBody.firstChild);
+      }
+    }
+    logLineCount--;
+  }
+
+  // Auto-scroll to bottom
+  el.logBody.scrollTop = el.logBody.scrollHeight;
+}
+
+function detectLogClass(line) {
+  const lower = line.toLowerCase();
+  if (/\[error\]|exception|traceback|critical/.test(lower)) return 'error';
+  if (/\[warn\]|warning/.test(lower))   return 'warn';
+  if (/\[info\]|\[ok\]|started|connected|saved/.test(lower)) return 'ok';
+  if (/\[debug\]/.test(lower))          return 'debug';
+  return 'info';
+}
+
+function clearLogs() {
+  el.logBody.innerHTML = '';
+  logLineCount = 0;
+  appendLog('[log] Console cleared', 'info');
+}
+
+// ─────────────────────────────────────────────
+// Bitrate slider — initial gradient fill
+// ─────────────────────────────────────────────
+function initSlider() {
+  const v = el.bitrateSlider.value;
+  updateBitrateLabel(v);
+}
+
+// ─────────────────────────────────────────────
+// Initial API status fetch (before WS is live)
+// ─────────────────────────────────────────────
+async function fetchInitialLogs() {
+  try {
+    const res  = await fetch(API('/logs'));
+    const body = await res.json();
+    (body.lines || []).slice(-50).forEach((l) => appendLog(l));
+  } catch { /* no-op — WS will deliver logs */ }
+}
+
+// ─────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────
+async function init() {
+  initSlider();
+  await loadConfig();
+  await fetchInitialLogs();
+  connectWS();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

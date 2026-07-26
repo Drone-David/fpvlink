@@ -1,0 +1,135 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# /etc/systemd/system/fpvlink.service
+#
+# FPVLink Streaming Service — systemd unit file.
+#
+# Installation:
+#   sudo cp fpvlink.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now fpvlink
+#
+# Management:
+#   sudo systemctl start   fpvlink     # start immediately
+#   sudo systemctl stop    fpvlink     # graceful stop (sends SIGTERM)
+#   sudo systemctl restart fpvlink     # full restart
+#   sudo systemctl status  fpvlink     # show current status + last log lines
+#   journalctl -u fpvlink -f           # stream live logs
+#   journalctl -u fpvlink --since "1h ago"  # last hour of logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=FPVLink Streaming Service
+Documentation=https://github.com/yourorg/fpvlink
+
+# Start after the network stack is up. If your SRT/RTMP destination is on a
+# VPN, add the VPN service here (e.g. After=wg-quick@wg0.service).
+After=network.target network-online.target usb-gadget.target
+
+# Wait for network to be fully configured (IP assigned), not just up.
+Wants=network-online.target
+
+# If USB gadget setup is managed by a separate unit, make it mandatory:
+# Requires=usb-gadget.target
+
+[Service]
+# ── Process type ─────────────────────────────────────────────────────────────
+# 'notify' means the process calls sd_notify(READY=1) when initialisation is
+# complete. The web server (server.js) should do this via the 'sd-notify' npm
+# package so systemd knows the service is truly ready (not just started).
+Type=notify
+
+# ── User / group ──────────────────────────────────────────────────────────────
+# Run as a dedicated low-privilege user. Create it with:
+#   sudo useradd --system --no-create-home --shell /sbin/nologin fpvlink
+#   sudo usermod -aG video fpvlink    # access /dev/dri, /dev/video*
+#   sudo usermod -aG plugdev fpvlink  # access USB devices via udev rules
+User=fpvlink
+Group=fpvlink
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+WorkingDirectory=/opt/fpvlink
+
+# ── Environment ───────────────────────────────────────────────────────────────
+# EnvironmentFile loads key=value pairs (supports # comments, blank lines).
+# Variables defined here are available to the process as env vars.
+# Shell variable expansion ($VAR) is NOT performed in EnvironmentFile.
+EnvironmentFile=/opt/fpvlink/system/fpvlink.env
+
+# Always set NODE_ENV so Express knows it's in production.
+Environment=NODE_ENV=production
+
+# GStreamer debug level (overridden by LOG_LEVEL=debug in fpvlink.env).
+# 0=none, 2=warning, 4=info, 5=debug.
+Environment=GST_DEBUG=2
+
+# ── Command ───────────────────────────────────────────────────────────────────
+ExecStart=/usr/bin/node /opt/fpvlink/web/server.js
+
+# Optional: run a pre-start setup script (e.g. mount /record, check USB rules)
+# ExecStartPre=/opt/fpvlink/scripts/preflight.sh
+
+# Graceful stop: send SIGTERM and wait up to TimeoutStopSec for clean exit.
+# The Node.js process should catch SIGTERM, stop the GStreamer pipeline
+# (which finalises any open MP4 files), then exit.
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+# ── Restart policy ────────────────────────────────────────────────────────────
+# Always restart so a crash or OOM doesn't leave the device dark.
+Restart=always
+
+# Wait 3 seconds between restart attempts to avoid tight crash loops.
+RestartSec=3
+
+# After 10 restart attempts within StartLimitIntervalSec, systemd gives up.
+# Comment out to restart indefinitely (useful for headless embedded devices).
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+# ── Watchdog ──────────────────────────────────────────────────────────────────
+# The process must call sd_notify(WATCHDOG=1) at least once every 30 seconds.
+# If it doesn't, systemd kills and restarts it. The web server's health-check
+# loop should ping the watchdog every ~15 seconds.
+WatchdogSec=30
+
+# ── Timeouts ─────────────────────────────────────────────────────────────────
+# How long systemd waits for the process to become "ready" (sd_notify READY=1).
+TimeoutStartSec=30
+
+# How long systemd waits after SIGTERM before sending SIGKILL.
+# 15 s gives the GStreamer pipeline time to finalize MP4 moov atoms.
+TimeoutStopSec=15
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Route stdout/stderr to systemd journal. 'journal' is the recommended value
+# for production; use 'journal+console' during debugging.
+StandardOutput=journal
+StandardError=journal
+
+# Tag all log lines with this identifier (query with journalctl -t fpvlink).
+SyslogIdentifier=fpvlink
+
+# ── Capabilities / Security hardening ────────────────────────────────────────
+# Give the process access to real-time scheduling for the GStreamer pipeline
+# threads without full root privileges. The pipeline benefits from SCHED_FIFO
+# for the decode/encode threads on a busy SoC.
+AmbientCapabilities=CAP_SYS_NICE
+
+# Prevent the process from gaining new privileges (e.g. via setuid binaries).
+NoNewPrivileges=true
+
+# Restrict to a private /tmp (prevents information leakage between services).
+PrivateTmp=true
+
+# Make /usr, /boot, /etc read-only (write access only to /opt/fpvlink, /record).
+ProtectSystem=strict
+
+# Allow writes to the recording directory and the install directory.
+# Adjust /record to match local_record_path in config.json.
+ReadWritePaths=/opt/fpvlink /record /var/log/fpvlink
+
+# Deny access to other users' home directories.
+ProtectHome=true
+
+[Install]
+# Start at boot in multi-user (non-graphical) runlevel.
+WantedBy=multi-user.target

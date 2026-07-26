@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# fpvlink/requirements.txt
+#
+# Python runtime dependencies for the FPVLink capture layer and pipeline driver.
+#
+# Install with:
+#   pip3 install -r requirements.txt
+#
+# On the Orange Pi 5 Plus (Debian/Ubuntu-based armbian):
+#   sudo apt install python3-pip python3-gi python3-gi-cairo gir1.2-gst-plugins-base-1.0
+#   pip3 install --user -r requirements.txt
+#
+# Note: gi (GObject Introspection / GStreamer Python bindings) and asyncio
+# are provided by the system, not pip. See comments below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── USB I/O ──────────────────────────────────────────────────────────────────
+
+# pyusb: Pure-Python USB access via libusb-1.0 / libusb-0.1 / OpenUSB backends.
+# Used by the capture layer to open the DJI FPV Goggles USB bulk endpoints,
+# send activation/handshake commands, and read the raw H.265 bytestream.
+#
+# System prerequisite: libusb-1.0-0 (usually pre-installed)
+#   sudo apt install libusb-1.0-0
+#
+# udev rule (allows fpvlink user to access USB without root):
+#   SUBSYSTEM=="usb", ATTRS{idVendor}=="2ca3", MODE="0660", GROUP="plugdev"
+#
+# Docs: https://pyusb.github.io/pyusb/
+pyusb>=1.2.1
+
+# ─── Binary protocol parsing ─────────────────────────────────────────────────
+
+# construct: Declarative binary data structure parser / builder.
+# Used to parse the DJI proprietary USB protocol frames (length-prefixed
+# messages with header, payload type, and CRC fields) and to build the
+# goggles activation / start-stream command packets.
+#
+# We use the Struct, Bytes, Int16ul, Int32ul, Enum, etc. constructs.
+#
+# Docs: https://construct.readthedocs.io/
+construct>=2.10.68
+
+# ─── Async HTTP client (optional — for future cloud integration) ──────────────
+
+# aiohttp: Async HTTP client/server for asyncio.
+# Currently only used for optional health-check pings to a remote dashboard.
+# Comment out if you want a minimal install with no async HTTP.
+#
+# Docs: https://docs.aiohttp.org/
+aiohttp>=3.9.0
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+# python-dotenv: Loads .env files into os.environ.
+# Allows the Python process to read from /opt/fpvlink/system/fpvlink.env
+# directly (in addition to inheriting vars from the systemd service).
+#
+# Docs: https://github.com/theskumar/python-dotenv
+python-dotenv>=1.0.0
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+
+# structlog: Structured logging library — outputs JSON log events.
+# Integrates cleanly with journald (systemd journal reads JSON natively
+# when JOURNAL_STREAM is set, enabling log filtering by field).
+#
+# Docs: https://www.structlog.org/
+structlog>=24.1.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System-level packages (install via apt, NOT pip)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# GStreamer Python bindings (gi / PyGObject):
+#   sudo apt install python3-gi python3-gi-cairo gir1.2-gst-plugins-base-1.0
+#
+# GStreamer core + plugins:
+#   sudo apt install \
+#     gstreamer1.0-tools \
+#     gstreamer1.0-plugins-base \
+#     gstreamer1.0-plugins-good \
+#     gstreamer1.0-plugins-bad \
+#     gstreamer1.0-plugins-ugly \
+#     gstreamer1.0-libav \
+#     gstreamer1.0-rkmpp
+#
+# asyncio: Part of the Python standard library (Python 3.4+). No pip install needed.
+#   The pipeline.py uses asyncio.Queue for inter-thread communication between
+#   the USB capture thread and the GStreamer feed loop.
+#
+# threading: Part of the Python standard library. Used to run the GLib main
+#   loop in a background thread without blocking the asyncio event loop.
+#
+# typing: Part of the Python standard library (Python 3.5+).
+# ─────────────────────────────────────────────────────────────────────────────

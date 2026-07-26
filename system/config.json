@@ -1,0 +1,154 @@
+{
+  "_comment": "FPVLink system configuration — edit this file and restart the service to apply changes.",
+  "_schema_version": "1",
+
+  "device": {
+    "_comment": "Human-readable device identity. Version follows semver.",
+    "name": "FPVLink",
+    "version": "0.1.0"
+  },
+
+  "capture": {
+    "_comment": "USB capture layer configuration for DJI FPV goggles.",
+
+    "goggles_model": "auto",
+    "_goggles_model_comment": "Which goggles variant to expect on USB. Options: 'v1v2' (DJI FPV Goggles V1/V2), 'goggles2' (DJI Goggles 2 / Goggles Integra), 'auto' (try both, slower init).",
+
+    "interface": 0,
+    "_interface_comment": "USB interface number that carries the video bulk endpoints.",
+
+    "ep_out": 1,
+    "_ep_out_comment": "USB bulk-OUT endpoint number (host → device, for control commands).",
+
+    "ep_in": 2,
+    "_ep_in_comment": "USB bulk-IN endpoint number (device → host, receives raw H.265 stream).",
+
+    "usb_vid": "0x2CA3",
+    "_usb_vid_comment": "USB Vendor ID for DJI devices (0x2CA3). Do not change unless using a different brand.",
+
+    "usb_pid": "auto",
+    "_usb_pid_comment": "USB Product ID. 'auto' probes for known DJI PIDs (0x001F for V1/V2, 0x0046 for Goggles 2). Set explicitly to lock to one model.",
+
+    "read_timeout_ms": 5000,
+    "_read_timeout_ms_comment": "Milliseconds to wait for a USB bulk read before timing out and retrying.",
+
+    "max_packet_size": 65536,
+    "_max_packet_size_comment": "Maximum USB transfer size in bytes per read call. Larger = fewer syscalls. Must be a multiple of the USB wMaxPacketSize (usually 512 or 1024)."
+  },
+
+  "pipeline": {
+    "_comment": "GStreamer pipeline / codec settings.",
+
+    "bitrate_kbps": 8000,
+    "_bitrate_kbps_comment": "Target encode bitrate in kilobits per second for streaming outputs. Recording branch is not re-encoded (pass-through) so this only affects SRT/RTMP.",
+
+    "codec": "h264",
+    "_codec_comment": "Output codec for streaming branches. Only 'h264' is currently supported. 'h265' output is planned for a future release.",
+
+    "use_hardware": true,
+    "_use_hardware_comment": "If true, use Rockchip MPP (mppvideodec / mppvideoenc) for decode+encode. If false, or if rkmpp plugin is unavailable, falls back to avdec_h265 + x264enc (software — high CPU, higher latency).",
+
+    "latency_mode": "low",
+    "_latency_mode_comment": "Preset that tunes internal queue depths and encoder settings. Options: 'low' (2-buffer queues, zero-latency encoder tune — ideal for FPV), 'balanced' (4-buffer queues, moderate quality), 'quality' (8-buffer queues, higher quality encoder settings — not recommended for real-time).",
+
+    "keyframe_interval": 60,
+    "_keyframe_interval_comment": "Encoder keyframe interval in frames. At 30fps, 60 = 2-second GOP. Shorter GOPs improve seek latency but increase bitrate.",
+
+    "decode_disable_error": true,
+    "_decode_disable_error_comment": "Pass disable-error=true to mppvideodec so non-fatal decoding errors (e.g. partial NAL units) don't abort the pipeline."
+  },
+
+  "outputs": {
+    "_comment": "Output destinations. Each can be independently enabled or disabled.",
+
+    "srt": {
+      "_comment": "SRT (Secure Reliable Transport) streaming. Low-latency, UDP-based, tolerates packet loss. Ideal for local network or point-to-point IP links.",
+      "enabled": false,
+      "url": "",
+      "_url_comment": "Full SRT URI, e.g. 'srt://192.168.1.50:9000' for caller mode or 'srt://:9000' for listener mode.",
+      "latency_ms": 100,
+      "_latency_ms_comment": "SRT end-to-end latency in milliseconds. Lower = less delay, higher = more resilient to packet loss. 100ms is a good balance for local WiFi.",
+      "wait_for_connection": false,
+      "_wait_for_connection_comment": "If false, srtsink won't block the pipeline when no receiver is connected. Set true if you want pipeline start to wait for a viewer."
+    },
+
+    "rtmp": {
+      "_comment": "RTMP streaming for platforms like YouTube Live, Twitch, or a local NGINX-RTMP server.",
+      "enabled": false,
+      "url": "",
+      "_url_comment": "RTMP base URL, e.g. 'rtmp://a.rtmp.youtube.com/live2'. The stream key from stream_key or from STREAM_KEY_YOUTUBE env var is appended automatically.",
+      "stream_key": "",
+      "_stream_key_comment": "RTMP stream key. Leave blank to read from STREAM_KEY_YOUTUBE / STREAM_KEY_TWITCH environment variables (more secure — keys not stored in this file).",
+      "buffer_ms": 500,
+      "_buffer_ms_comment": "Internal RTMP output buffer in milliseconds. Increase if you see 'rtmpsink: buffer underflow' warnings."
+    },
+
+    "local_record": {
+      "_comment": "Record the raw decoded stream to local MP4 files, split into segments.",
+      "enabled": true,
+      "path": "/record",
+      "_path_comment": "Directory to write MP4 segment files. The directory must be writable by the fpvlink user. Recommend a fast SD card or NVMe mount.",
+      "segment_duration_s": 300,
+      "_segment_duration_s_comment": "How long each MP4 segment should be, in seconds. 300s = 5-minute files. Shorter segments reduce data loss on power failure.",
+      "max_size_gb": 50,
+      "_max_size_gb_comment": "If total recording directory size exceeds this value (in GB), the oldest segments are deleted to make room. Set 0 to disable auto-cleanup.",
+      "filename_pattern": "fpvlink-%05d.mp4",
+      "_filename_pattern_comment": "splitmuxsink filename pattern. %05d is replaced by the segment index (00000, 00001, …)."
+    },
+
+    "rtsp": {
+      "_comment": "RTSP server (future feature — not yet implemented in v0.1.0).",
+      "enabled": false,
+      "port": 8554,
+      "_port_comment": "RTSP server port. Standard RTSP port is 554 but that requires root; 8554 works as a non-root user.",
+      "path": "/live",
+      "_path_comment": "RTSP mount path. Full URL will be rtsp://device-ip:8554/live."
+    },
+
+    "hdmi": {
+      "_comment": "Direct HDMI output via KMS/DRM. Zero-copy hardware decoded feed.",
+      "enabled": true,
+      "connector_id": 217,
+      "_connector_id_comment": "HDMI connector ID. 217 targets the dedicated HDMI0 out. Set explicitly to target specific HDMI port."
+    }
+  },
+
+  "web": {
+    "_comment": "Embedded web UI / control API server (Node.js Express).",
+
+    "port": 8080,
+    "_port_comment": "TCP port for the web server. Can be overridden with FPVLINK_PORT env var.",
+
+    "allow_remote": false,
+    "_allow_remote_comment": "If false, the web server binds to 127.0.0.1 only (localhost-only access). Set true to bind to 0.0.0.0 and allow access from other devices on the network. WARNING: there is no authentication yet; only enable this on a trusted network.",
+
+    "session_secret": "",
+    "_session_secret_comment": "Secret for signing session cookies. Leave empty to auto-generate on startup (sessions won't survive restarts). Set a fixed value for persistent sessions."
+  },
+
+  "network": {
+    "_comment": "Network interface preferences.",
+
+    "prefer_ethernet": true,
+    "_prefer_ethernet_comment": "If true, SRT and RTMP traffic is routed via the Ethernet interface when available, preferring it over WiFi for stability.",
+
+    "srt_port": 9000,
+    "_srt_port_comment": "Local UDP port for the SRT listener (when this device acts as the SRT server). Opened in the firewall by the setup script.",
+
+    "srt_interface": "",
+    "_srt_interface_comment": "Bind SRT listener to a specific interface (e.g. 'eth0'). Leave blank to bind to all interfaces."
+  },
+
+  "logging": {
+    "_comment": "Logging configuration.",
+
+    "level": "info",
+    "_level_comment": "Log verbosity. Options: 'error', 'warn', 'info', 'debug'. Can be overridden with LOG_LEVEL env var. Use 'debug' to see full GStreamer pipeline strings.",
+
+    "gst_debug": "2",
+    "_gst_debug_comment": "GStreamer debug level (GST_DEBUG). 0=none, 1=error, 2=warn, 3=fixme, 4=info, 5=debug. Passed as environment variable to the Python process.",
+
+    "file": "",
+    "_file_comment": "Optional path to write logs to a file in addition to systemd journal. Leave empty to log to journal only."
+  }
+}

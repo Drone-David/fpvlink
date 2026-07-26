@@ -1,0 +1,31 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+dist/
+build/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Project Logs and Scratch Scripts
+*.log
+patch_*.py
+scratch_*.py
+replace_stream.py
