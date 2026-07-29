@@ -56,7 +56,9 @@ SOURCE_CANDIDATES=(
 )
 
 # Additional groups the service user should belong to
-EXTRA_GROUPS=(video audio plugdev dialout)
+# systemd-journal lets the service user read journalctl output — needed for
+# the dashboard's "Download Diagnostics" bundle (scripts/collect-diagnostics.sh).
+EXTRA_GROUPS=(video audio plugdev dialout systemd-journal)
 
 # -----------------------------------------------------------------------------
 # 1. Create 'fpvlink' system user

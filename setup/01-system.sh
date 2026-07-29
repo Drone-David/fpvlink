@@ -41,7 +41,7 @@ info "Script started at $(date '+%Y-%m-%d %H:%M:%S %Z')"
 # -----------------------------------------------------------------------------
 # 1. Update & upgrade
 # -----------------------------------------------------------------------------
-step "1/4  Updating package lists and upgrading system"
+step "1/5  Updating package lists and upgrading system"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -56,7 +56,7 @@ ok "System packages upgraded"
 # -----------------------------------------------------------------------------
 # 2. Install required packages
 # -----------------------------------------------------------------------------
-step "2/4  Installing required packages"
+step "2/5  Installing required packages"
 
 PACKAGES=(
     # Python runtime & tools
@@ -101,7 +101,7 @@ ok "All packages installed successfully"
 # -----------------------------------------------------------------------------
 # 3. Enable kernel modules at boot
 # -----------------------------------------------------------------------------
-step "3/4  Enabling kernel modules"
+step "3/5  Enabling kernel modules"
 
 MODULES_FILE="/etc/modules"
 MODULES_TO_ADD=(libcomposite dwc3 usbmon)
@@ -125,7 +125,7 @@ done
 # -----------------------------------------------------------------------------
 # 4. Install Python packages via pip
 # -----------------------------------------------------------------------------
-step "4/4  Installing Python packages via pip"
+step "4/5  Installing Python packages via pip"
 
 # On Armbian Bookworm, pip may be externally managed; use --break-system-packages
 # or a venv.  We use --break-system-packages here for simplicity in a dedicated
@@ -135,6 +135,48 @@ PY_PACKAGES=(pyusb construct)
 info "Installing Python packages: ${PY_PACKAGES[*]}"
 pip3 install --break-system-packages --no-cache-dir "${PY_PACKAGES[@]}"
 ok "Python packages installed: ${PY_PACKAGES[*]}"
+
+# -----------------------------------------------------------------------------
+# 5. Persist the journal (needed for field troubleshooting)
+#
+# Default Storage=volatile wipes all logs on every reboot, including the
+# always-on pipeline's own cold-boot warm-restart. A field device with no
+# internet relies on "Download Diagnostics" in the dashboard to explain what
+# went wrong after the fact — that's useless if the journal never survives a
+# reboot. See system/journald-fpvlink.conf for the full rationale.
+# -----------------------------------------------------------------------------
+step "5/5  Enabling persistent journal storage"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JOURNALD_TEMPLATE="${SCRIPT_DIR}/../system/journald-fpvlink.conf"
+JOURNALD_DROPIN_DIR="/etc/systemd/journald.conf.d"
+JOURNALD_DROPIN="${JOURNALD_DROPIN_DIR}/fpvlink.conf"
+
+if [[ -f "$JOURNALD_TEMPLATE" ]]; then
+    mkdir -p "$JOURNALD_DROPIN_DIR"
+    cp "$JOURNALD_TEMPLATE" "$JOURNALD_DROPIN"
+    ok "Installed $JOURNALD_DROPIN"
+
+    mkdir -p /var/log/journal
+    systemd-tmpfiles --create --prefix /var/log/journal || true
+    chown root:systemd-journal /var/log/journal
+    chmod 2755 /var/log/journal
+    ok "Created persistent journal directory /var/log/journal"
+
+    systemctl restart systemd-journald
+    ok "systemd-journald restarted with persistent storage"
+
+    # The restart alone doesn't reliably create /var/log/journal/<machine-id>/
+    # on every system (observed on Armbian: it stayed empty until forced) —
+    # --flush explicitly migrates volatile (/run) entries into persistent
+    # storage and makes journald start writing there going forward.
+    journalctl --flush
+    ok "Flushed journal into persistent storage"
+else
+    warn "Template $JOURNALD_TEMPLATE not found – skipping persistent journal setup"
+fi
+info "Note: the fpvlink user isn't created yet at this stage (04-service.sh does"
+info "that) — it's added to the systemd-journal group there so it can read logs."
 
 # -----------------------------------------------------------------------------
 # Done

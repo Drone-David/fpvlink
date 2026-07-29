@@ -338,6 +338,7 @@
           <span class="log-dot yellow"></span>
           <span class="log-dot green"></span>
         </div>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:0.72rem;" id="downloadDiagBtn" onclick="downloadDiagnostics()" aria-label="Download diagnostics bundle for support">Download Diagnostics</button>
         <button class="btn btn-ghost" style="padding:4px 10px;font-size:0.72rem;" onclick="clearLogs()" aria-label="Clear log console">Clear</button>
       </div>
       <div class="log-body" id="logBody" role="log" aria-label="System log output" aria-live="polite" aria-atomic="false">
@@ -806,6 +807,44 @@ function clearLogs() {
   el.logBody.innerHTML = '';
   logLineCount = 0;
   appendLog('[log] Console cleared', 'info');
+}
+
+// ─────────────────────────────────────────────
+// Diagnostics bundle (for support, no internet required)
+// ─────────────────────────────────────────────
+async function downloadDiagnostics() {
+  const btn = $('downloadDiagBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Collecting…';
+
+  try {
+    const res = await fetch(API('/diagnostics'));
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : 'fpvlink-diagnostics.tar.gz';
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    appendLog(`[diagnostics] Downloaded ${filename}`, 'ok');
+  } catch (err) {
+    appendLog(`[error] Diagnostics download failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 // ─────────────────────────────────────────────

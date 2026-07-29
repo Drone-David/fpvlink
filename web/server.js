@@ -741,6 +741,38 @@ app.get('/api/logs', (req, res) => {
   res.json({ lines });
 });
 
+// GET /api/diagnostics — bundles journal history, service status, DRM plane
+// state, and redacted config into a tarball for field troubleshooting (see
+// scripts/collect-diagnostics.sh). This is the only supported way for a user
+// with no internet access to hand support something useful: it only needs
+// local LAN reachability to the dashboard, same as every other control here.
+// Generated on demand and deleted right after it's sent — nothing accumulates.
+app.get('/api/diagnostics', (req, res) => {
+  const scriptPath = path.join(ROOT_DIR, 'scripts', 'collect-diagnostics.sh');
+  const tarPath = path.join('/tmp', `fpvlink-diagnostics-${Date.now()}.tar.gz`);
+
+  execFile('bash', [scriptPath, tarPath], { timeout: 20000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    if (error) {
+      logger.error(`Diagnostics collection failed: ${error.message}${stderr ? ' | ' + stderr.trim() : ''}`);
+      return res.status(500).json({ error: 'Diagnostics collection failed' });
+    }
+    // The script's contract: stdout's last line is the tarball path; every
+    // progress message goes to stderr.
+    const producedPath = stdout.trim().split('\n').pop();
+    if (!producedPath || !fs.existsSync(producedPath)) {
+      logger.error(`Diagnostics script produced no output file (stdout: "${stdout.trim()}")`);
+      return res.status(500).json({ error: 'Diagnostics collection produced no output' });
+    }
+
+    const downloadName = `fpvlink-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.tar.gz`;
+    logger.info(`Diagnostics bundle generated: ${downloadName}`);
+    res.download(producedPath, downloadName, (downloadErr) => {
+      if (downloadErr) logger.error(`Diagnostics download stream error: ${downloadErr.message}`);
+      fs.unlink(producedPath, () => {});
+    });
+  });
+});
+
 // ─────────────────────────────────────────────
 // WebSocket server
 // ─────────────────────────────────────────────
