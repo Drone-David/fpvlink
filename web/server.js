@@ -151,12 +151,23 @@ function readConfig() {
     const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
     const parsed = JSON.parse(raw);
     const merged = { ...CONFIG_DEFAULTS, ...parsed };
-    // Nested outputs.ndi is the source of truth the pipeline reads; project it
-    // onto the flat keys the dashboard binds to so the toggle reflects reality.
+    // Nested outputs.* is the source of truth the pipeline reads; project it
+    // onto the flat keys the dashboard binds to so toggles reflect reality.
     const ndi = parsed.outputs && parsed.outputs.ndi;
     if (ndi) {
       if (typeof ndi.enabled === 'boolean') merged.ndi_enabled = ndi.enabled;
       if (typeof ndi.name === 'string')     merged.ndi_name    = ndi.name;
+    }
+    const srt = parsed.outputs && parsed.outputs.srt;
+    if (srt) {
+      if (typeof srt.enabled === 'boolean') merged.srt_enabled = srt.enabled;
+      if (typeof srt.url === 'string')      merged.srt_url     = srt.url;
+    }
+    const rtmp = parsed.outputs && parsed.outputs.rtmp;
+    if (rtmp) {
+      if (typeof rtmp.enabled === 'boolean')   merged.rtmp_enabled = rtmp.enabled;
+      if (typeof rtmp.url === 'string')        merged.rtmp_url     = rtmp.url;
+      if (typeof rtmp.stream_key === 'string') merged.rtmp_key     = rtmp.stream_key;
     }
     return merged;
   } catch (err) {
@@ -587,15 +598,26 @@ app.post('/api/config', (req, res) => {
   }
   const current = readConfig();
   const updated  = { ...current, ...req.body };
-  // Mirror the flat NDI keys the dashboard sends into nested outputs.ndi, which
-  // is what capture/pipeline.py reads. The pipeline watches this and restarts
-  // itself to apply (server.js has no systemctl privilege). Preserve any other
-  // outputs.* stanzas (srt/rtmp/rtsp/hdmi) already in the file.
+  // Mirror the flat NDI/SRT/RTMP keys the dashboard sends into nested
+  // outputs.*, which is what capture/pipeline.py reads. The pipeline watches
+  // this and restarts itself to apply (server.js has no systemctl privilege).
+  // Preserve any other outputs.* stanzas (rtsp/hdmi) already in the file.
   updated.outputs = { ...(current.outputs || {}), ...(req.body.outputs || {}) };
   updated.outputs.ndi = {
     ...(updated.outputs.ndi || {}),
     enabled: !!updated.ndi_enabled,
     name: typeof updated.ndi_name === 'string' && updated.ndi_name.trim() ? updated.ndi_name.trim() : 'FPVLink',
+  };
+  updated.outputs.srt = {
+    ...(updated.outputs.srt || {}),
+    enabled: !!updated.srt_enabled,
+    url: typeof updated.srt_url === 'string' ? updated.srt_url.trim() : (current.outputs?.srt?.url || ''),
+  };
+  updated.outputs.rtmp = {
+    ...(updated.outputs.rtmp || {}),
+    enabled: !!updated.rtmp_enabled,
+    url: typeof updated.rtmp_url === 'string' ? updated.rtmp_url.trim() : (current.outputs?.rtmp?.url || ''),
+    stream_key: typeof updated.rtmp_key === 'string' ? updated.rtmp_key : (current.outputs?.rtmp?.stream_key || ''),
   };
   try {
     writeConfig(updated);

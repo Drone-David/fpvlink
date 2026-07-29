@@ -2,12 +2,12 @@
 
 Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
 
-**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional NDI network output), with a web dashboard for live stats. The remaining streaming outputs (SRT/RTMP/RTSP) and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
+**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional NDI network output, HDMI 3D LUT, and SRT/RTMP passthrough), with a web dashboard for live stats. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
 
 **Supported goggles:** DJI Goggles 2 / 3 / Integra / N3 · DJI FPV Goggles V1/V2
 **Output today:** HDMI (direct KMS/DRM, hardware decode)
-**Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor)
-**Output planned, not yet wired up:** SRT · RTMP · Local recording · RTSP
+**Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor) · HDMI 3D LUT · SRT · RTMP
+**Output planned, not yet wired up:** Local recording · RTSP
 
 ---
 
@@ -89,11 +89,11 @@ sudo ./setup/04-service.sh
 
 ### Validate hardware codec
 
-The live pipeline only **decodes** H.264 (goggles → HDMI); it doesn't encode. `mppvideoenc` isn't used by the current pipeline but is still checked by setup for future streaming outputs — see [Roadmap](#roadmap).
+The live pipeline only **decodes** H.264 (goggles → HDMI); it doesn't encode. SRT/RTMP passthrough (`capture/stream_output.py`) also doesn't encode — it muxes the goggles' own H.264 straight through. `mppvideoenc` isn't used anywhere today; it's checked by setup for a possible future re-encode path (e.g. baking the HDMI LUT into the outgoing SRT/RTMP stream) — see [Roadmap](#roadmap).
 
 ```bash
 gst-inspect-1.0 mppvideodec   # required — hardware H.264 decode
-gst-inspect-1.0 mppvideoenc   # not currently used, reserved for future SRT/RTMP output
+gst-inspect-1.0 mppvideoenc   # not currently used by anything; reserved for a future re-encode path
 ```
 
 ---
@@ -157,7 +157,7 @@ http://<OPI-IP>:8080
 
 The dashboard shows live fps, received bitrate, resolution, and dropped-frame stats reported by the pipeline every 2 seconds. It does **not** show a video preview — the real feed is the HDMI output, not the browser (see [Current architecture](#current-architecture)).
 
-The dashboard's **NDI** toggle is wired up and works (see below). The SRT/RTMP fields are present in the UI but aren't connected to the running pipeline yet — see [Roadmap](#roadmap). Ignore those for now.
+The dashboard's **NDI**, **HDMI 3D LUT**, and **SRT/RTMP** controls are all wired up and work (see below).
 
 ### NDI output (working)
 
@@ -177,6 +177,14 @@ Apply a `.cube` color-grading LUT to the HDMI output. In the dashboard, open **H
 - Changing the LUT restarts the pipeline to apply (~3s standby blip), same as NDI.
 - Fail-safe: if the plugin isn't built or the `.cube` file is missing, the pipeline logs it and shows an **ungraded** picture rather than blacking out HDMI.
 - Config: `hdmi_lut_enabled` and `hdmi_lut_active_id` (top-level in `system/config.json`); LUT files and their manifest live under `system/luts/`. The dashboard manages all of this.
+
+### SRT / RTMP output (working)
+
+Push the goggles' own H.264 stream out over SRT or RTMP — no re-encode, so it costs muxing only, not CPU/NPU. Enable **SRT Output** / **RTMP Output** in the dashboard and set a URL (`srt://host:port`, or `rtmp://host/app` plus a stream key for Twitch/YouTube-style targets — the key is appended as a URL path segment at connect time and never stored joined into the URL).
+
+- Runs in its own process (`capture/stream_output.py`, service `fpvlink-stream`), **not** inside the always-on display pipeline. An earlier version tried tapping SRT/RTMP off a tee in `capture/pipeline.py`, mirroring the NDI branch — it reproducibly broke HDMI: a stalled or unreachable `rtmpsink` hung the *entire* tee, not just its own branch, because GStreamer's query/state-sync machinery propagates synchronously through a pipeline (including through queue elements, which only decouple buffer data, not queries). A bad remote target must never be able to take down the display, so SRT/RTMP now run as a separate OS process, fed a copy of the H.264 bytestream over a small internal relay socket. If that process hangs or crashes, systemd restarts just it — HDMI is structurally unaffected.
+- Changing SRT/RTMP settings restarts only `fpvlink-stream` (not the display pipeline) to apply.
+- Config: `outputs.srt` (`enabled`, `url`, `latency_ms`, `wait_for_connection`) and `outputs.rtmp` (`enabled`, `url`, `stream_key`) in `system/config.json`; the dashboard manages both.
 
 ---
 
@@ -203,24 +211,36 @@ Goggles V1/V2/3/Integra/N3 ──USB───▶ USB host (capture/v1v2.py) ─�
                                               ▼
                                          tee ─┬─────────────────────────────┐
                                               ▼                             ▼
-                          kmssink → HDMI (connector 217,        ndisink → NDI on LAN
-                          plane 194: native-NV12, no convert)   (optional, outputs.ndi;
-                                                                NV12 direct, no convert)
+                    [fpvlut3d] ! kmssink → HDMI (connector 217,   ndisink → NDI on LAN
+                    plane 194: native-NV12; optional .cube        (optional, outputs.ndi;
+                    LUT grade, hdmi_lut_enabled)                  NV12 direct, no convert)
+
+  Also, a best-effort byte copy (never blocks the above) ──▶ UNIX socket
+                                          /run/fpvlink/stream_relay.sock
+                                                                   │
+                                                                   ▼
+                          capture/stream_output.py — SEPARATE process/service
+                          (fpvlink-stream.service) ─┬─▶ srtsink  (outputs.srt)
+                                                     └─▶ rtmpsink (outputs.rtmp)
+                          Mux-only passthrough, no re-encode. Runs outside this
+                          graph on purpose (see SRT/RTMP section above), so a
+                          stuck/unreachable target can only crash this process,
+                          never HDMI.
 
 capture/pipeline.py also POSTs fps / bitrate / resolution / dropped-frame stats
 every 2s to web/server.js (127.0.0.1:8081/internal/status), which the dashboard
 at :8080 displays over a WebSocket.
 ```
 
-Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. The HDMI display uses DRM **plane 194** (a native-NV12 overlay on connector 217's CRTC), so decoded NV12 reaches the panel with no software color conversion — this is what keeps 1080p60 CPU low. The only encode is the optional NDI (SpeedHQ) branch when `outputs.ndi.enabled` is set; there's no SRT/RTMP/record branch in this path.
+Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. The HDMI display uses DRM **plane 194** (a native-NV12 overlay on connector 217's CRTC), so decoded NV12 reaches the panel with no software color conversion unless the LUT is on — this is what keeps 1080p60 CPU low. The only encode is the optional NDI (SpeedHQ) branch when `outputs.ndi.enabled` is set; SRT/RTMP are mux-only passthrough (no encode) and run in a separate process, not this graph.
 
-`pipeline/pipeline.py` (H.265 decode → H.264 encode → SRT/RTMP/record branches) is the original design and still present in the repo, but it is **not** what's deployed — the `fpvlink-pipeline.service` unit runs `capture/pipeline.py`, the always-on HDMI-only rewrite.
+`pipeline/pipeline.py` (H.265 decode → H.264 encode → SRT/RTMP/record branches) is the original design and still present in the repo, but it is **not** what's deployed — the `fpvlink-pipeline.service` unit runs `capture/pipeline.py`, the always-on HDMI-only rewrite. SRT/RTMP passthrough on the live path is a from-scratch reimplementation in `capture/stream_output.py`, not a port of that legacy code.
 
 ---
 
 ## Latency
 
-The live pipeline has no user-tunable latency settings — its low-latency behavior is baked into a fixed, hand-tuned GStreamer graph (byte-stream parsing, `ignore-error` decode, `sync=false` on `kmssink`, shallow leaky display queue). `system/config.json`'s `pipeline.latency_mode` and the SRT `latency_ms` setting apply only to the legacy `pipeline/pipeline.py` streaming path and have no effect on the current HDMI-only pipeline.
+The HDMI display pipeline has no user-tunable latency settings — its low-latency behavior is baked into a fixed, hand-tuned GStreamer graph (byte-stream parsing, `ignore-error` decode, `sync=false` on `kmssink`, shallow leaky display queue). `system/config.json`'s `pipeline.latency_mode` applies only to the legacy `pipeline/pipeline.py` streaming path and has no effect on the current HDMI-only pipeline. `outputs.srt.latency_ms`, however, is real and live: it's passed straight to `srtsink` in `capture/stream_output.py`.
 
 There is no capture-side timestamp from the goggles, so true glass-to-glass latency isn't currently measurable — the dashboard's latency tile intentionally shows `—` rather than a guessed number.
 
@@ -258,15 +278,20 @@ journalctl -u fpvlink-pipeline --no-pager -n 50
 
 ```
 fpvlink/
-├── setup/          One-time setup scripts (run on OPi 5 Plus)
-├── capture/        USB capture (goggles2.py, v1v2.py) + capture/pipeline.py,
-│                   the always-on HDMI pipeline actually deployed
+├── setup/          One-time setup scripts (run on OPi 5 Plus), incl.
+│                   build-lut-plugin.sh (compiles capture/fpvlut3d.c)
+├── capture/        USB capture (goggles2.py, v1v2.py) + capture/pipeline.py
+│                   (the always-on HDMI pipeline actually deployed) +
+│                   capture/stream_output.py (separate SRT/RTMP process) +
+│                   capture/fpvlut3d.c (native 3D-LUT GStreamer element)
 ├── pipeline/       Original streaming-focused pipeline (H.265 decode → H.264
 │                   encode → SRT/RTMP/record) — not currently deployed, kept
-│                   as a base for re-enabling streaming outputs
+│                   for reference only; capture/stream_output.py is a
+│                   from-scratch reimplementation of SRT/RTMP, not a port
 ├── web/            Web UI + API server (stats dashboard, config)
-├── system/         systemd services + config.json (some fields, e.g. SRT/
-│                   RTMP/latency_mode, only apply to the legacy pipeline/)
+├── system/         systemd services + config.json (pipeline.latency_mode
+│                   only applies to the legacy pipeline/; outputs.srt/rtmp
+│                   are read by capture/stream_output.py, not pipeline/)
 └── README.md       This file
 ```
 
@@ -274,7 +299,8 @@ fpvlink/
 
 ## Roadmap
 
-- [ ] Re-enable SRT/RTMP/local-record outputs on the live pipeline (code exists in `pipeline/pipeline.py`, not yet merged into the always-on `capture/pipeline.py`)
+- [ ] RTSP output (needs `gst-rtsp-server`, a pull-based server architecture unlike SRT/RTMP's push sinks, and its own dashboard UI — not yet started)
+- [ ] Local recording
 - [ ] Measure real glass-to-glass latency (needs a capture-side timestamp from the goggles)
 - [ ] 5G modem support (Quectel RM500Q via PCIe M.2)
 - [ ] WebRTC output for sub-300ms browser monitoring

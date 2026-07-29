@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.request
 import json
+import collections
 import gi
 
 gi.require_version("Gst", "1.0")
@@ -30,6 +31,7 @@ os.environ["GST_PLUGIN_PATH"] = (
 Gst.init(sys.argv)
 
 SOCK = "/run/fpvlink/live.sock"
+STREAM_RELAY_SOCK = "/run/fpvlink/stream_relay.sock"
 STANDBY_IMAGE = os.path.join(os.path.dirname(__file__), "standby.jpg")
 STATUS_URL = "http://127.0.0.1:8081/internal/status"
 CONFIG_PATH = os.environ.get(
@@ -141,7 +143,29 @@ q_out = 0         # buffers leaving the display queue          → (in-out-level
 # - sync-streams=false on input-selector ensures the inactive branch keeps running and dropping buffers,
 #   so when we switch, the active branch is already producing frames.
 # - imagefreeze is-live=true on the standby card ensures it behaves like a live source.
-PIPELINE_STRING = f"""
+#
+# SRT/RTMP passthrough deliberately does NOT live in this graph. It was tried
+# as a tee off appsrc (queue, leaky=downstream, per NDI's proven pattern) and
+# reproducibly broke the display: GStreamer's latency-query/state-sync
+# machinery propagates synchronously through the WHOLE pipeline, including
+# through queue elements (which only decouple buffer data, not queries) — a
+# stalled/unreachable rtmpsink hung the entire tee, verified with an isolated
+# gst-launch test where an unrelated filesink sibling branch received zero
+# bytes while rtmpsink blocked on connect(). That's disqualifying for the one
+# guarantee this process exists to keep: HDMI must never go down over a bad
+# remote stream target. SRT/RTMP instead run in the separate stream_output.py
+# process (its own systemd unit), fed a copy of the H.264 bytes over the
+# stream-relay socket below — a stuck network sink can only crash that
+# process, never this one. See relay_push()/relay_server_loop().
+def build_pipeline_string(lut_segment, ndi_branch):
+    """Assemble the full pipeline description.
+
+    Called once with the real, config-derived optional segments. If that
+    fails to parse, called again with both blank as a last-resort fallback
+    (see the parse_launch try/except below) — a single bad LUT/NDI setting
+    must never leave HDMI dark.
+    """
+    return f"""
 appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream
   ! h264parse
   ! mppvideodec ignore-error=true
@@ -155,8 +179,8 @@ filesrc location={STANDBY_IMAGE}
   ! sel.
 
 sel. ! tee name=t
-t. ! queue name=dispq max-size-buffers=6 leaky=downstream {{LUT_SEGMENT}}! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
-{{NDI_BRANCH}}
+t. ! queue name=dispq max-size-buffers=6 leaky=downstream {lut_segment}! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
+{ndi_branch}
 """
 
 # NDI output taps the same tee as the display, so the NDI source stays alive
@@ -174,14 +198,27 @@ if ndi_enabled:
     print(f"[Pipeline] NDI output ENABLED as '{_safe_name}'", flush=True)
 else:
     NDI_BRANCH = ""
-PIPELINE_STRING = PIPELINE_STRING.replace("{NDI_BRANCH}", NDI_BRANCH)
 
 # HDMI 3D LUT colour grade (display branch only — see build_lut_segment).
 lut_enabled, lut_active_id = load_lut_config()
 LUT_SEGMENT = build_lut_segment(lut_enabled, lut_active_id)
-PIPELINE_STRING = PIPELINE_STRING.replace("{LUT_SEGMENT}", LUT_SEGMENT)
 
-pipeline = Gst.parse_launch(PIPELINE_STRING)
+PIPELINE_STRING = build_pipeline_string(LUT_SEGMENT, NDI_BRANCH)
+
+try:
+    pipeline = Gst.parse_launch(PIPELINE_STRING)
+except GLib.Error as e:
+    # Should be unreachable — build_lut_segment already validates its inputs —
+    # but this is the always-on display pipeline, so treat any parse failure
+    # (including ones we didn't anticipate) as recoverable, not fatal: drop
+    # every optional output and keep HDMI alive rather than crash-loop on a
+    # config value that will still be bad on the next systemd restart.
+    print(f"[Pipeline] FATAL: pipeline failed to parse with configured outputs "
+          f"({e}) — retrying with LUT/NDI disabled so HDMI stays up. Check "
+          f"those settings in the dashboard.", flush=True)
+    PIPELINE_STRING = build_pipeline_string("", "")
+    pipeline = Gst.parse_launch(PIPELINE_STRING)
+
 live_src = pipeline.get_by_name("live")
 sel = pipeline.get_by_name("sel")
 
@@ -314,17 +351,70 @@ def recv_exact(conn, n):
         buf.extend(chunk)
     return bytes(buf)
 
+# ── Stream-output relay ─────────────────────────────────────────────────────
+# Forwards a copy of every H.264 chunk to the optional stream_output.py process
+# (SRT/RTMP passthrough — see the note above build_pipeline_string for why that
+# lives in a separate process). relay_push() is called from feed_loop()'s hot
+# path and MUST be non-blocking no matter what: a bounded ring buffer with
+# oldest-dropped-when-full semantics, no lock held across any I/O. All actual
+# socket I/O happens on relay_server_loop()'s own thread, so nothing that
+# process or its network targets do can ever stall feed_loop() or the display.
+_relay_buf = collections.deque(maxlen=90)   # a few seconds of chunks; oldest auto-evicted
+_relay_cond = threading.Condition()
+
+def relay_push(data):
+    with _relay_cond:
+        _relay_buf.append(data)
+        _relay_cond.notify()
+
+def relay_server_loop():
+    """Accept a single stream_output.py connection and drain _relay_buf to it.
+    Entirely best-effort: if nobody's connected the buffer just cycles
+    harmlessly; if the connected client stalls, sendall() may block THIS
+    thread — which is fine, since it's dedicated and touches nothing feed_loop
+    or the GStreamer pipeline depend on.
+    """
+    try: os.unlink(STREAM_RELAY_SOCK)
+    except FileNotFoundError: pass
+    os.makedirs(os.path.dirname(STREAM_RELAY_SOCK), exist_ok=True)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(STREAM_RELAY_SOCK)
+    srv.listen(1)
+    print(f"[Pipeline] Stream-relay socket listening on {STREAM_RELAY_SOCK}", flush=True)
+
+    while True:
+        conn, _ = srv.accept()
+        conn.settimeout(5.0)
+        print("[Pipeline] stream_output.py connected to relay", flush=True)
+        try:
+            while True:
+                with _relay_cond:
+                    while not _relay_buf:
+                        _relay_cond.wait(timeout=1.0)
+                    data = _relay_buf.popleft() if _relay_buf else None
+                if data is None:
+                    continue
+                conn.sendall(len(data).to_bytes(4, "big") + data)
+        except (BrokenPipeError, OSError, socket.timeout) as e:
+            print(f"[Pipeline] Stream-relay client error: {e}", flush=True)
+        finally:
+            try: conn.close()
+            except Exception: pass
+            print("[Pipeline] stream_output.py disconnected from relay", flush=True)
+
+threading.Thread(target=relay_server_loop, daemon=True).start()
+
 def feed_loop():
     """UNIX socket server accepting H.264 chunks from capture scripts."""
     global bytes_total
     try: os.unlink(SOCK)
     except FileNotFoundError: pass
-    
+
     os.makedirs(os.path.dirname(SOCK), exist_ok=True)
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(SOCK)
     srv.listen(1)
-    
+
     print(f"[Pipeline] Listening for feeder connections on {SOCK}")
     while True:
         try:
@@ -334,10 +424,11 @@ def feed_loop():
                 hdr = recv_exact(conn, 4)
                 if not hdr: break
                 size = int.from_bytes(hdr, "big")
-                
+
                 data = recv_exact(conn, size)
                 if not data: break
                 bytes_total += len(data)
+                relay_push(data)
 
                 buf = Gst.Buffer.new_wrapped(data)
                 # Emit push-buffer to appsrc. If the pipeline errors, this returns non-OK.
@@ -349,7 +440,7 @@ def feed_loop():
             try: conn.close()
             except Exception: pass
             print("[Pipeline] Feeder disconnected")
-            # Note: We do NOT push EOS. We just wait for a new connection. 
+            # Note: We do NOT push EOS. We just wait for a new connection.
             # The watchdog probe on the standby pad will detect the stall and flip the switch.
 
 threading.Thread(target=feed_loop, daemon=True).start()
@@ -397,6 +488,7 @@ def config_watch_loop(initial):
     change to the NDI branch or the HDMI LUT. systemd's Restart=always then
     respawns us, rebuilding the graph with (or without) those elements. Costs a
     ~3s standby blip on toggle — acceptable for a deliberate config change.
+    (SRT/RTMP are watched by stream_output.py's own config loop, not this one.)
     """
     while True:
         time.sleep(2.0)

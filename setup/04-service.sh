@@ -275,6 +275,26 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# 5c. Install the optional SRT/RTMP passthrough unit (fpvlink-stream.service)
+#
+# A separate process from fpvlink-pipeline.service on purpose — see the
+# module docstring in capture/stream_output.py. It's harmless to install even
+# if the user never enables SRT/RTMP: it idles quietly until the dashboard
+# turns one on.
+# -----------------------------------------------------------------------------
+STREAM_SERVICE_FILE="/etc/systemd/system/fpvlink-stream.service"
+STREAM_TEMPLATE_FILE="${INSTALL_DIR}/system/fpvlink-stream.service"
+
+if [[ -f "$STREAM_TEMPLATE_FILE" ]]; then
+    step "5c/6  Installing SRT/RTMP unit → $STREAM_SERVICE_FILE"
+    cp "$STREAM_TEMPLATE_FILE" "$STREAM_SERVICE_FILE"
+    chmod 644 "$STREAM_SERVICE_FILE"
+    ok "Stream service file copied from template"
+else
+    warn "Stream template $STREAM_TEMPLATE_FILE not found – SRT/RTMP output will be unavailable"
+fi
+
+# -----------------------------------------------------------------------------
 # 6. Enable and start the services
 # -----------------------------------------------------------------------------
 step "6/6  Enabling and starting services"
@@ -293,6 +313,13 @@ if [[ -f "$PIPELINE_SERVICE_FILE" ]]; then
     ok "fpvlink-pipeline.service enabled (will start on boot)"
     systemctl start fpvlink-pipeline.service
     ok "fpvlink-pipeline.service started"
+fi
+
+if [[ -f "$STREAM_SERVICE_FILE" ]]; then
+    systemctl enable fpvlink-stream.service
+    ok "fpvlink-stream.service enabled (will start on boot)"
+    systemctl start fpvlink-stream.service
+    ok "fpvlink-stream.service started"
 fi
 
 # Give the service a moment to stabilise

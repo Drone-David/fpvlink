@@ -1,0 +1,33 @@
+[Unit]
+Description=FPVLink Optional SRT/RTMP Passthrough
+Documentation=https://github.com/yourorg/fpvlink
+
+# Deliberately a separate unit from fpvlink-pipeline.service (the always-on
+# HDMI display). SRT/RTMP run here specifically so a stuck or unreachable
+# remote target can only crash THIS service — see the module docstring in
+# capture/stream_output.py for why that isolation has to be process-level.
+After=network.target network-online.target fpvlink-pipeline.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fpvlink
+Group=fpvlink
+WorkingDirectory=/opt/fpvlink
+
+ExecStart=/usr/bin/python3 capture/stream_output.py
+
+# Always restart — a bad SRT/RTMP target should degrade to "not streaming",
+# never to a dead process. RestartSec is short so an enable/disable/URL
+# change (which this script applies by quitting and letting systemd respawn
+# it) is applied quickly.
+Restart=always
+RestartSec=1
+
+Environment=FPVLINK_CONFIG=/opt/fpvlink/system/config.json
+
+LimitNOFILE=65535
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
