@@ -14,20 +14,18 @@ WorkingDirectory=/opt/fpvlink
 ExecStartPre=+/usr/bin/mkdir -p /run/fpvlink
 ExecStartPre=+/bin/chown -R fpvlink:fpvlink /run/fpvlink
 
-# Cold-boot HDMI race: the kernel force-enables the HDMI connector (cmdline
-# video=HDMI-A-1:...@60e, no real EDID/hotplug) around when systemd starts us,
-# and the CRTC often isn't scanning yet when our first modeset lands -> black
-# screen. This short delay alone does NOT fix it (verified black even at t~16s);
-# the actual fix is the one-shot warm-restart in capture/pipeline.py (see
-# WARM_MARKER). The delay just gives that first warm run a stable start point.
-ExecStartPre=/bin/sleep 5
+# Cold-boot HDMI black-screen fix lives in capture/pipeline.py (one-shot
+# warm-restart; see WARM_MARKER). The settle/warm delays are now inside that
+# script and gated to the warm run only, so we no longer delay here (the old
+# ExecStartPre sleep was paid on both the warm and the real start).
 
 # Run the always-on pipeline script
 ExecStart=/usr/bin/python3 capture/pipeline.py
 
-# Always restart if it crashes
+# Always restart if it crashes. RestartSec is short because the cold-boot
+# warm-restart (see capture/pipeline.py) relies on this gap being brief.
 Restart=always
-RestartSec=3
+RestartSec=1
 
 # Environment
 Environment=NODE_ENV=production
