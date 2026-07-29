@@ -33,10 +33,15 @@ Wants=network-online.target
 
 [Service]
 # ── Process type ─────────────────────────────────────────────────────────────
-# 'notify' means the process calls sd_notify(READY=1) when initialisation is
-# complete. The web server (server.js) should do this via the 'sd-notify' npm
-# package so systemd knows the service is truly ready (not just started).
-Type=notify
+# 'simple': systemd considers the service started as soon as the process is
+# exec'd. We deliberately do NOT use Type=notify — server.js sends no
+# sd_notify(READY=1) (Node's dgram is UDP-only and can't write systemd's
+# AF_UNIX datagram socket without a native addon), so Type=notify would make
+# systemd wait for a readiness signal that never comes and kill the dashboard
+# at TimeoutStartSec. If a real readiness/watchdog contract is ever wanted,
+# implement sd_notify in server.js first, then switch this back to notify and
+# re-add WatchdogSec below.
+Type=simple
 
 # ── User / group ──────────────────────────────────────────────────────────────
 # Run as a dedicated low-privilege user. Create it with:
@@ -86,15 +91,12 @@ StartLimitBurst=10
 StartLimitIntervalSec=60
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
-# The process must call sd_notify(WATCHDOG=1) at least once every 30 seconds.
-# If it doesn't, systemd kills and restarts it. The web server's health-check
-# loop should ping the watchdog every ~15 seconds.
-WatchdogSec=30
+# No WatchdogSec: a systemd watchdog requires the process to send
+# sd_notify(WATCHDOG=1) periodically, which server.js does not do (see the
+# Type= note above). Enabling it without that would kill a perfectly healthy
+# dashboard every 30s. Restart=always below still recovers an actual crash.
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
-# How long systemd waits for the process to become "ready" (sd_notify READY=1).
-TimeoutStartSec=30
-
 # How long systemd waits after SIGTERM before sending SIGKILL.
 # 15 s gives the GStreamer pipeline time to finalize MP4 moov atoms.
 TimeoutStopSec=15

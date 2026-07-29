@@ -255,9 +255,29 @@ cat "$SERVICE_FILE"
 echo ""
 
 # -----------------------------------------------------------------------------
-# 6. Enable and start the service
+# 5b. Install the always-on video pipeline unit (fpvlink-pipeline.service)
+#
+# This is a SEPARATE service from fpvlink.service (the Node dashboard). It runs
+# capture/pipeline.py — the always-on GStreamer graph that drives HDMI out. The
+# dashboard alone produces no video, so a fresh flash must install this too or
+# the device boots to a black screen.
 # -----------------------------------------------------------------------------
-step "6/6  Enabling and starting fpvlink.service"
+PIPELINE_SERVICE_FILE="/etc/systemd/system/fpvlink-pipeline.service"
+PIPELINE_TEMPLATE_FILE="${INSTALL_DIR}/system/fpvlink-pipeline.service"
+
+if [[ -f "$PIPELINE_TEMPLATE_FILE" ]]; then
+    step "5b/6  Installing pipeline unit → $PIPELINE_SERVICE_FILE"
+    cp "$PIPELINE_TEMPLATE_FILE" "$PIPELINE_SERVICE_FILE"
+    chmod 644 "$PIPELINE_SERVICE_FILE"
+    ok "Pipeline service file copied from template"
+else
+    warn "Pipeline template $PIPELINE_TEMPLATE_FILE not found – HDMI output will not start on boot"
+fi
+
+# -----------------------------------------------------------------------------
+# 6. Enable and start the services
+# -----------------------------------------------------------------------------
+step "6/6  Enabling and starting services"
 
 systemctl daemon-reload
 ok "systemd daemon reloaded"
@@ -268,6 +288,13 @@ ok "fpvlink.service enabled (will start on boot)"
 systemctl start fpvlink.service
 ok "fpvlink.service started"
 
+if [[ -f "$PIPELINE_SERVICE_FILE" ]]; then
+    systemctl enable fpvlink-pipeline.service
+    ok "fpvlink-pipeline.service enabled (will start on boot)"
+    systemctl start fpvlink-pipeline.service
+    ok "fpvlink-pipeline.service started"
+fi
+
 # Give the service a moment to stabilise
 sleep 2
 
@@ -275,6 +302,10 @@ echo ""
 info "Service status:"
 echo ""
 systemctl status fpvlink.service --no-pager --lines=20 || true
+if [[ -f "$PIPELINE_SERVICE_FILE" ]]; then
+    echo ""
+    systemctl status fpvlink-pipeline.service --no-pager --lines=20 || true
+fi
 
 # -----------------------------------------------------------------------------
 # Done
@@ -291,10 +322,11 @@ else
 fi
 echo ""
 echo -e "  ${BOLD}Useful commands:${NC}"
-echo -e "    ${CYAN}systemctl status fpvlink${NC}       – service status"
-echo -e "    ${CYAN}journalctl -u fpvlink -f${NC}       – live log tail"
-echo -e "    ${CYAN}systemctl restart fpvlink${NC}      – restart service"
-echo -e "    ${CYAN}systemctl disable fpvlink${NC}      – disable at boot"
+echo -e "    ${CYAN}systemctl status fpvlink fpvlink-pipeline${NC}   – service status"
+echo -e "    ${CYAN}journalctl -u fpvlink-pipeline -f${NC}          – live pipeline (video) log tail"
+echo -e "    ${CYAN}journalctl -u fpvlink -f${NC}                   – live dashboard log tail"
+echo -e "    ${CYAN}systemctl restart fpvlink-pipeline fpvlink${NC} – restart both"
+echo -e "    ${CYAN}systemctl disable fpvlink fpvlink-pipeline${NC} – disable at boot"
 echo ""
 echo -e "  Service user:    ${CYAN}$FPVLINK_USER${NC}"
 echo -e "  Install dir:     ${CYAN}$INSTALL_DIR${NC}"

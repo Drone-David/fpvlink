@@ -12,6 +12,14 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GLib", "2.0")
 from gi.repository import Gst, GLib
 
+# Under systemd our stdout is a journald socket, not a tty — so Python
+# BLOCK-buffers it (~8KB) and diagnostics can sit unflushed indefinitely. That
+# silently hid this script's startup logs from `journalctl -u fpvlink-pipeline`:
+# in a healthy run (NDI/LUT off, status posts OK) no flush=True print ever fires,
+# so nothing pushed the buffer out. Line-buffering makes every print reach the
+# journal immediately, including any added later without an explicit flush.
+sys.stdout.reconfigure(line_buffering=True)
+
 # Make the locally-built fpvlut3d element (capture/libgstfpvlut3d.so) discoverable
 # without a system-wide install. Must be set before Gst.init scans the registry.
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -347,6 +355,39 @@ def feed_loop():
 threading.Thread(target=feed_loop, daemon=True).start()
 
 main_loop = GLib.MainLoop()
+
+# ── Bus watch ───────────────────────────────────────────────────────────────
+# Without this, a fatal GstMessage.ERROR from mppvideodec / kmssink / fpvlut3d
+# just freezes the picture: the Python process keeps running, so systemd's
+# Restart=always never fires and there's no journal signal of why. We watch the
+# bus and quit the main loop on ERROR or EOS — the same "quit → systemd respawns
+# a fresh graph" recovery path that config_watch_loop already relies on. A clean
+# restart onto a fresh pipeline is the right move for an always-on display: it's
+# what reliably recovers, and RestartSec=1 keeps the blackout brief.
+def on_bus_error(_bus, message):
+    err, debug = message.parse_error()
+    src = message.src.get_name() if message.src else "?"
+    print(f"[Pipeline] FATAL bus error from {src}: {err.message} "
+          f"({debug or 'no debug info'}) — restarting", flush=True)
+    main_loop.quit()
+
+def on_bus_eos(_bus, _message):
+    # Unexpected on an always-on pipeline (we never push EOS to appsrc); treat as
+    # a terminal condition and restart rather than sit on a frozen last frame.
+    print("[Pipeline] Unexpected EOS on the pipeline bus — restarting", flush=True)
+    main_loop.quit()
+
+def on_bus_warning(_bus, message):
+    warn, debug = message.parse_warning()
+    src = message.src.get_name() if message.src else "?"
+    print(f"[Pipeline] WARNING from {src}: {warn.message} "
+          f"({debug or 'no debug info'})", flush=True)
+
+_bus = pipeline.get_bus()
+_bus.add_signal_watch()
+_bus.connect("message::error", on_bus_error)
+_bus.connect("message::eos", on_bus_eos)
+_bus.connect("message::warning", on_bus_warning)
 
 def config_watch_loop(initial):
     """Restart the pipeline when a graph-affecting config value changes.
