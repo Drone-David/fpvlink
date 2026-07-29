@@ -97,7 +97,16 @@
       "_comment": "Direct HDMI output via KMS/DRM. Zero-copy hardware decoded feed.",
       "enabled": true,
       "connector_id": 217,
-      "_connector_id_comment": "HDMI connector ID. 217 targets the dedicated HDMI0 out. Set explicitly to target specific HDMI port."
+      "_connector_id_comment": "HDMI connector ID. 217 targets the dedicated HDMI0 out. Set explicitly to target specific HDMI port.",
+      "plane_id": 194,
+      "_plane_id_comment": "DRM plane on connector 217's CRTC (89). 194 is a native-NV12 video overlay, so the decoder's NV12 reaches the panel with no software videoconvert. Auto-select picks RGB-only plane 178, which forces a CPU-heavy convert. Currently hardcoded in capture/pipeline.py (KMS_PLANE_ID); this field documents it."
+    },
+
+    "ndi": {
+      "_comment": "NDI (Network Device Interface) output. Broadcasts a low-latency NDI source on the LAN, auto-discovered by OBS, vMix, and NDI Studio Monitor. Taps the decoded NV12 feed directly (no color convert). Toggling this restarts the pipeline to apply (~3s standby blip).",
+      "enabled": false,
+      "name": "FPVLink",
+      "_name_comment": "NDI source name shown to receivers on the network."
     }
   },
 

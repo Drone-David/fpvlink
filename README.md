@@ -2,10 +2,11 @@
 
 Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
 
-**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out, with a web dashboard for live stats. Streaming outputs (SRT/RTMP/RTSP) and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
+**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional NDI network output), with a web dashboard for live stats. The remaining streaming outputs (SRT/RTMP/RTSP) and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
 
 **Supported goggles:** DJI Goggles 2 / 3 / Integra / N3 · DJI FPV Goggles V1/V2
 **Output today:** HDMI (direct KMS/DRM, hardware decode)
+**Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor)
 **Output planned, not yet wired up:** SRT · RTMP · Local recording · RTSP
 
 ---
@@ -156,7 +157,16 @@ http://<OPI-IP>:8080
 
 The dashboard shows live fps, received bitrate, resolution, and dropped-frame stats reported by the pipeline every 2 seconds. It does **not** show a video preview — the real feed is the HDMI output, not the browser (see [Current architecture](#current-architecture)).
 
-The dashboard's SRT/RTMP fields are present in the UI but aren't connected to the running pipeline yet — see [Roadmap](#roadmap). Ignore them for now.
+The dashboard's **NDI** toggle is wired up and works (see below). The SRT/RTMP fields are present in the UI but aren't connected to the running pipeline yet — see [Roadmap](#roadmap). Ignore those for now.
+
+### NDI output (working)
+
+Enable the **NDI Output** toggle in the dashboard (and optionally set a source name). The pipeline broadcasts a low-latency NDI source on your LAN, tapped straight off the decoded feed (no extra color conversion). It's auto-discovered by OBS (NDI plugin), vMix, and NDI Studio Monitor as `<hostname> (<name>)`.
+
+- Toggling NDI restarts the pipeline to apply, so expect a ~3s standby blip on the HDMI output.
+- The NDI source stays alive across live↔standby, so receivers always see a picture.
+- Cost: ~44% of one CPU core for the NDI (SpeedHQ) encode at 1080p, on top of the ~19% for HDMI display — well within budget on the RK3588.
+- Config lives at `outputs.ndi` in `system/config.json` (`enabled`, `name`); the dashboard writes it there.
 
 ---
 
@@ -181,14 +191,18 @@ Goggles V1/V2/3/Integra/N3 ──USB───▶ USB host (capture/v1v2.py) ─�
                                      falls back on signal loss                on startup
                                               │
                                               ▼
-                                  kmssink → HDMI (connector-id 217)
+                                         tee ─┬─────────────────────────────┐
+                                              ▼                             ▼
+                          kmssink → HDMI (connector 217,        ndisink → NDI on LAN
+                          plane 194: native-NV12, no convert)   (optional, outputs.ndi;
+                                                                NV12 direct, no convert)
 
 capture/pipeline.py also POSTs fps / bitrate / resolution / dropped-frame stats
 every 2s to web/server.js (127.0.0.1:8081/internal/status), which the dashboard
 at :8080 displays over a WebSocket.
 ```
 
-Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. There is currently no encode step and no SRT/RTMP/record branch in this path.
+Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. The HDMI display uses DRM **plane 194** (a native-NV12 overlay on connector 217's CRTC), so decoded NV12 reaches the panel with no software color conversion — this is what keeps 1080p60 CPU low. The only encode is the optional NDI (SpeedHQ) branch when `outputs.ndi.enabled` is set; there's no SRT/RTMP/record branch in this path.
 
 `pipeline/pipeline.py` (H.265 decode → H.264 encode → SRT/RTMP/record branches) is the original design and still present in the repo, but it is **not** what's deployed — the `fpvlink-pipeline.service` unit runs `capture/pipeline.py`, the always-on HDMI-only rewrite.
 

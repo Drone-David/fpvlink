@@ -17,6 +17,27 @@ Gst.init(sys.argv)
 SOCK = "/run/fpvlink/live.sock"
 STANDBY_IMAGE = os.path.join(os.path.dirname(__file__), "standby.jpg")
 STATUS_URL = "http://127.0.0.1:8081/internal/status"
+CONFIG_PATH = os.environ.get(
+    "FPVLINK_CONFIG",
+    os.path.join(os.path.dirname(__file__), "..", "system", "config.json"),
+)
+
+
+def load_ndi_config():
+    """Read outputs.ndi from config.json → (enabled: bool, name: str).
+
+    Defensive on purpose: any read/parse error returns NDI-disabled rather than
+    raising, so a malformed or missing config can never take down the always-on
+    display pipeline.
+    """
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        ndi = (cfg.get("outputs") or {}).get("ndi") or {}
+        return bool(ndi.get("enabled", False)), str(ndi.get("name") or "FPVLink")
+    except Exception as e:
+        print(f"[Pipeline] NDI config read failed ({e}); NDI disabled", flush=True)
+        return False, "FPVLink"
 
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
 KMS_CONNECTOR_ID = 217
@@ -58,7 +79,25 @@ filesrc location={STANDBY_IMAGE}
 
 sel. ! tee name=t
 t. ! queue name=dispq max-size-buffers=6 leaky=downstream ! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
+{{NDI_BRANCH}}
 """
+
+# NDI output taps the same tee as the display, so the NDI source stays alive
+# across live↔standby switches (receivers always see a picture). ndisink accepts
+# NV12 directly, so no videoconvert is needed — only its internal SpeedHQ encode
+# costs CPU. leaky=downstream keeps a stalled NDI receiver from backpressuring
+# (and stuttering) the HDMI display branch.
+ndi_enabled, ndi_name = load_ndi_config()
+if ndi_enabled:
+    _safe_name = ndi_name.replace('"', "").replace("\n", "").strip() or "FPVLink"
+    NDI_BRANCH = (
+        f't. ! queue name=ndiq max-size-buffers=4 leaky=downstream '
+        f'! ndisink ndi-name="{_safe_name}"'
+    )
+    print(f"[Pipeline] NDI output ENABLED as '{_safe_name}'", flush=True)
+else:
+    NDI_BRANCH = ""
+PIPELINE_STRING = PIPELINE_STRING.replace("{NDI_BRANCH}", NDI_BRANCH)
 
 pipeline = Gst.parse_launch(PIPELINE_STRING)
 live_src = pipeline.get_by_name("live")
@@ -233,11 +272,33 @@ def feed_loop():
 
 threading.Thread(target=feed_loop, daemon=True).start()
 
+main_loop = GLib.MainLoop()
+
+def config_watch_loop(initial):
+    """Restart the pipeline when outputs.ndi changes.
+
+    server.js can't restart this service (its sudoers grants only python3, not
+    systemctl), so instead we watch the config and quit the main loop on an NDI
+    change. systemd's Restart=always then respawns us, rebuilding the graph with
+    (or without) the NDI branch. Costs a ~3s standby blip on toggle — acceptable
+    for a deliberate config change.
+    """
+    while True:
+        time.sleep(2.0)
+        if load_ndi_config() != initial:
+            print("[Pipeline] outputs.ndi changed — restarting to apply", flush=True)
+            main_loop.quit()
+            return
+
+threading.Thread(
+    target=config_watch_loop, args=((ndi_enabled, ndi_name),), daemon=True
+).start()
+
 print("[Pipeline] Starting always-on GStreamer pipeline")
 pipeline.set_state(Gst.State.PLAYING)
 
 try:
-    GLib.MainLoop().run()
+    main_loop.run()
 except KeyboardInterrupt:
     print("[Pipeline] Exiting")
 finally:

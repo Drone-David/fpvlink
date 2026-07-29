@@ -149,7 +149,16 @@ function readConfig() {
       return { ...CONFIG_DEFAULTS };
     }
     const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-    return { ...CONFIG_DEFAULTS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    const merged = { ...CONFIG_DEFAULTS, ...parsed };
+    // Nested outputs.ndi is the source of truth the pipeline reads; project it
+    // onto the flat keys the dashboard binds to so the toggle reflects reality.
+    const ndi = parsed.outputs && parsed.outputs.ndi;
+    if (ndi) {
+      if (typeof ndi.enabled === 'boolean') merged.ndi_enabled = ndi.enabled;
+      if (typeof ndi.name === 'string')     merged.ndi_name    = ndi.name;
+    }
+    return merged;
   } catch (err) {
     logger.error(`Failed to read config: ${err.message}`);
     return { ...CONFIG_DEFAULTS };
@@ -578,6 +587,16 @@ app.post('/api/config', (req, res) => {
   }
   const current = readConfig();
   const updated  = { ...current, ...req.body };
+  // Mirror the flat NDI keys the dashboard sends into nested outputs.ndi, which
+  // is what capture/pipeline.py reads. The pipeline watches this and restarts
+  // itself to apply (server.js has no systemctl privilege). Preserve any other
+  // outputs.* stanzas (srt/rtmp/rtsp/hdmi) already in the file.
+  updated.outputs = { ...(current.outputs || {}), ...(req.body.outputs || {}) };
+  updated.outputs.ndi = {
+    ...(updated.outputs.ndi || {}),
+    enabled: !!updated.ndi_enabled,
+    name: typeof updated.ndi_name === 'string' && updated.ndi_name.trim() ? updated.ndi_name.trim() : 'FPVLink',
+  };
   try {
     writeConfig(updated);
     logger.info('Config updated');
