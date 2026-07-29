@@ -29,3 +29,7 @@ build/
 patch_*.py
 scratch_*.py
 replace_stream.py
+
+# Runtime-generated data (recreated automatically by server.js on startup)
+system/logs/
+system/luts/

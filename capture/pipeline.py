@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+import os
+import sys
+import socket
+import threading
+import time
+import urllib.request
+import json
+import gi
+
+gi.require_version("Gst", "1.0")
+gi.require_version("GLib", "2.0")
+from gi.repository import Gst, GLib
+
+Gst.init(sys.argv)
+
+SOCK = "/run/fpvlink/live.sock"
+STANDBY_IMAGE = os.path.join(os.path.dirname(__file__), "standby.jpg")
+STATUS_URL = "http://127.0.0.1:8081/internal/status"
+
+STALL_TIMEOUT_SEC = 0.5  # Time without live frames before falling back to standby
+last_live_time = 0.0
+
+# ── Live stats counters ───────────────────────────────────────────────────────
+# Updated from GStreamer streaming threads / feed thread, read by report loop.
+# Plain int increments; under the GIL a rare lost increment is harmless for stats.
+frame_count = 0   # decoded live frames (live-pad probe)      → fps
+bytes_total = 0   # total H.264 bytes received from the feeder → bitrate + received
+q_in = 0          # buffers entering the display queue
+q_out = 0         # buffers leaving the display queue          → (in-out-level)=dropped
+
+# Always-on pipeline using input-selector for instant switching.
+# - sync-streams=false on input-selector ensures the inactive branch keeps running and dropping buffers,
+#   so when we switch, the active branch is already producing frames.
+# - imagefreeze is-live=true on the standby card ensures it behaves like a live source.
+PIPELINE_STRING = f"""
+appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream
+  ! h264parse
+  ! mppvideodec ignore-error=true
+  ! video/x-raw,format=NV12,width=1920,height=1080
+  ! input-selector name=sel sync-streams=false
+
+filesrc location={STANDBY_IMAGE}
+  ! jpegdec ! imagefreeze is-live=true
+  ! videoconvert ! videoscale ! videorate
+  ! video/x-raw,format=NV12,width=1920,height=1080,framerate=60/1
+  ! sel.
+
+sel. ! tee name=t
+t. ! queue name=dispq max-size-buffers=6 leaky=downstream ! videoconvert ! video/x-raw,format=BGRx ! kmssink connector-id=217 sync=false
+"""
+
+pipeline = Gst.parse_launch(PIPELINE_STRING)
+live_src = pipeline.get_by_name("live")
+sel = pipeline.get_by_name("sel")
+
+live_pad = sel.get_static_pad("sink_0")
+standby_pad = sel.get_static_pad("sink_1")
+
+# Default to standby card
+sel.set_property("active-pad", standby_pad)
+
+def report_status_loop():
+    """Heartbeat pipeline status + live stats to the web server every 2 seconds."""
+    last_t = time.time()
+    last_frames = 0
+    last_bytes = 0
+    last_q_in = 0
+    last_q_out = 0
+    while True:
+        time.sleep(2.0)
+        try:
+            now = time.time()
+            elapsed = (now - last_t) or 1e-9
+            current = sel.get_property("active-pad")
+            status = "live" if current == live_pad else "standby"
+
+            fps = round((frame_count - last_frames) / elapsed, 1)
+            bitrate_kbps = round((bytes_total - last_bytes) * 8 / elapsed / 1000)
+
+            resolution = "—"
+            caps = live_pad.get_current_caps()
+            if caps and caps.get_size() > 0:
+                st = caps.get_structure(0)
+                ok_w, w = st.get_int("width")
+                ok_h, h = st.get_int("height")
+                if ok_w and ok_h:
+                    resolution = f"{w}x{h}"
+
+            # Drops in THIS window only (matches fps/bitrate's "current health"
+            # semantics) — not a lifetime total, which would only ever grow and
+            # make the "healthy" indicator permanently red after the first drop.
+            dropped = max(0, (q_in - last_q_in) - (q_out - last_q_out))
+
+            last_t, last_frames, last_bytes = now, frame_count, bytes_total
+            last_q_in, last_q_out = q_in, q_out
+
+            # No live signal → report a clean idle state rather than stale numbers.
+            if status != "live":
+                fps = 0.0
+                bitrate_kbps = 0
+                dropped = 0
+                resolution = "—"
+
+            payload = {
+                "status": status,
+                "fps": fps,
+                "bitrate_kbps": bitrate_kbps,
+                "resolution": resolution,
+                "bytes_received": bytes_total,
+                "dropped_frames": dropped,
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(STATUS_URL, data=data, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=1.0)
+        except Exception as e:
+            print(f"[Pipeline] Status post failed: {e}", flush=True)
+
+threading.Thread(target=report_status_loop, daemon=True).start()
+
+def on_live_probe(pad, info):
+    """
+    Pad probe on the live video feed.
+    Updates the freshness timestamp. If we were in standby, flips the active pad back to live.
+    This safely executes on the live branch's streaming thread.
+    """
+    global last_live_time, frame_count
+    last_live_time = time.time()
+    frame_count += 1
+
+    current = sel.get_property("active-pad")
+    if current != pad:
+        sel.set_property("active-pad", pad)
+    return Gst.PadProbeReturn.OK
+
+def on_standby_probe(pad, info):
+    """
+    Pad probe on the standby card.
+    Because sync-streams=false, input-selector consumes buffers from this pad even when inactive,
+    meaning this probe fires 60 times a second on the standby branch's streaming thread!
+    We use this to implement our stall watchdog cleanly without GLib timers.
+    """
+    global last_live_time
+    
+    if time.time() - last_live_time > STALL_TIMEOUT_SEC:
+        current = sel.get_property("active-pad")
+        if current != pad:
+            sel.set_property("active-pad", pad)
+    return Gst.PadProbeReturn.OK
+
+# Attach probes
+live_pad.add_probe(Gst.PadProbeType.BUFFER, on_live_probe)
+standby_pad.add_probe(Gst.PadProbeType.BUFFER, on_standby_probe)
+
+# Display-queue drop accounting: count buffers in vs out; the leaky queue silently
+# drops the oldest when full, so dropped ≈ (in - out - current level).
+dispq = pipeline.get_by_name("dispq")
+
+def _dispq_in_probe(pad, info):
+    # Only count while live: in standby the queue carries the 60fps card, whose
+    # drops are irrelevant. last_live_time freshness = we're currently live.
+    global q_in
+    if time.time() - last_live_time < STALL_TIMEOUT_SEC:
+        q_in += 1
+    return Gst.PadProbeReturn.OK
+
+def _dispq_out_probe(pad, info):
+    global q_out
+    if time.time() - last_live_time < STALL_TIMEOUT_SEC:
+        q_out += 1
+    return Gst.PadProbeReturn.OK
+
+dispq.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _dispq_in_probe)
+dispq.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _dispq_out_probe)
+
+def recv_exact(conn, n):
+    """Helper to read exactly n bytes from the socket."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+def feed_loop():
+    """UNIX socket server accepting H.264 chunks from capture scripts."""
+    global bytes_total
+    try: os.unlink(SOCK)
+    except FileNotFoundError: pass
+    
+    os.makedirs(os.path.dirname(SOCK), exist_ok=True)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCK)
+    srv.listen(1)
+    
+    print(f"[Pipeline] Listening for feeder connections on {SOCK}")
+    while True:
+        try:
+            conn, _ = srv.accept()
+            print("[Pipeline] Feeder connected")
+            while True:
+                hdr = recv_exact(conn, 4)
+                if not hdr: break
+                size = int.from_bytes(hdr, "big")
+                
+                data = recv_exact(conn, size)
+                if not data: break
+                bytes_total += len(data)
+
+                buf = Gst.Buffer.new_wrapped(data)
+                # Emit push-buffer to appsrc. If the pipeline errors, this returns non-OK.
+                if live_src.emit("push-buffer", buf) != Gst.FlowReturn.OK:
+                    break
+        except OSError as e:
+            print(f"[Pipeline] Socket error: {e}")
+        finally:
+            try: conn.close()
+            except Exception: pass
+            print("[Pipeline] Feeder disconnected")
+            # Note: We do NOT push EOS. We just wait for a new connection. 
+            # The watchdog probe on the standby pad will detect the stall and flip the switch.
+
+threading.Thread(target=feed_loop, daemon=True).start()
+
+print("[Pipeline] Starting always-on GStreamer pipeline")
+pipeline.set_state(Gst.State.PLAYING)
+
+try:
+    GLib.MainLoop().run()
+except KeyboardInterrupt:
+    print("[Pipeline] Exiting")
+finally:
+    pipeline.set_state(Gst.State.NULL)

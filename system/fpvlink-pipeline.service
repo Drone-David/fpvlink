@@ -1,0 +1,34 @@
+[Unit]
+Description=FPVLink Always-On Video Pipeline
+Documentation=https://github.com/yourorg/fpvlink
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fpvlink
+Group=fpvlink
+WorkingDirectory=/opt/fpvlink
+
+# Ensure the socket directory exists and has correct permissions
+ExecStartPre=+/usr/bin/mkdir -p /run/fpvlink
+ExecStartPre=+/bin/chown -R fpvlink:fpvlink /run/fpvlink
+
+# Run the always-on pipeline script
+ExecStart=/usr/bin/python3 capture/pipeline.py
+
+# Always restart if it crashes
+Restart=always
+RestartSec=3
+
+# Environment
+Environment=NODE_ENV=production
+Environment=FPVLINK_CONFIG=/opt/fpvlink/system/config.json
+
+# Process control
+LimitNOFILE=65535
+OOMScoreAdjust=-500
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

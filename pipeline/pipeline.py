@@ -49,6 +49,8 @@ Usage
 from __future__ import annotations
 
 import sys
+import os
+import json
 import asyncio
 import logging
 import threading
@@ -119,13 +121,16 @@ class FPVPipeline:
         # ── configuration ───────────────────────────────────────────────────
         self._srt_url:    Optional[str] = config.get("srt_url") or None
         self._rtmp_url:   Optional[str] = config.get("rtmp_url") or None
-        self._record:     bool          = bool(config.get("local_record", False))
-        self._record_path: str          = config.get("local_record_path", "/record")
         self._hdmi_enabled: bool        = bool(config.get("hdmi_enabled", False))
         self._hdmi_connector_id: int    = int(config.get("hdmi_connector_id", 0))
         self._bitrate_bps: int          = int(config.get("bitrate_kbps", 8000)) * 1000
         self._width:      int           = int(config.get("width", 1920))
         self._height:     int           = int(config.get("height", 1080))
+        self._ndi_enabled: bool         = bool(config.get("ndi_enabled", False))
+        self._ndi_name:   str           = config.get("ndi_name", "FPVLink")
+        self._hdmi_lut_enabled: bool    = bool(config.get("hdmi_lut_enabled", False))
+        self._hdmi_lut_active_id: str   = config.get("hdmi_lut_active_id", "")
+        self._system_dir: str           = config.get("system_dir", "/opt/fpvlink/system")
 
         # ── runtime state ───────────────────────────────────────────────────
         self._pipeline:   Optional[Gst.Pipeline] = None
@@ -165,11 +170,11 @@ class FPVPipeline:
             outputs.append(f"SRT → {self._srt_url}")
         if self._rtmp_url:
             outputs.append(f"RTMP → {self._rtmp_url}")
-        if self._record:
-            outputs.append(f"Record → {self._record_path}/fpvlink-NNNNN.mp4")
         if self._hdmi_enabled:
             c_str = f" (Connector {self._hdmi_connector_id})" if self._hdmi_connector_id > 0 else " (Auto Connector)"
             outputs.append(f"HDMI{c_str}")
+        if self._ndi_enabled:
+            outputs.append(f"NDI → {self._ndi_name}")
         if not outputs:
             logger.warning("No output destinations configured! "
                            "Pipeline will decode but not produce output.")
@@ -249,23 +254,6 @@ class FPVPipeline:
             f'sync=false '           # don't wait for clock sync — reduces latency
         )
 
-    def _build_record_branch(self) -> str:
-        """
-        Local recording passthrough branch.
-        queue → parse → splitmuxsink
-        """
-        if not self._record:
-            return ""
-
-        record_pattern = f"{self._record_path}/fpvlink-%05d.mp4"
-        return (
-            f't_h264. ! queue name=q_rec_in max-size-buffers=30 leaky=downstream '
-            f'! h264parse config-interval=-1 '
-            f'! splitmuxsink name=splitmuxsink '
-            f'location="{record_pattern}" '
-            f'max-size-time=300000000000 '   # 300 s in nanoseconds
-            f'muxer-factory=mp4mux '
-        )
 
     def _build_preview_branch(self) -> str:
         """
@@ -284,15 +272,51 @@ class FPVPipeline:
     def _build_hdmi_branch(self) -> str:
         """
         HDMI output branch:
-        queue → kmssink
+        queue → [lut3d] → videoconvert → kmssink
         """
         if not self._hdmi_enabled:
             return ""
 
         connector_prop = f"connector-id={self._hdmi_connector_id} " if self._hdmi_connector_id > 0 else ""
+        
+        lut_str = ""
+        if self._hdmi_lut_enabled and self._hdmi_lut_active_id:
+            manifest_path = os.path.join(self._system_dir, "luts", "manifest.json")
+            try:
+                if os.path.exists(manifest_path):
+                    with open(manifest_path, "r") as f:
+                        manifest = json.load(f)
+                    if any(l.get("id") == self._hdmi_lut_active_id for l in manifest):
+                        lut_file = os.path.join(self._system_dir, "luts", f"{self._hdmi_lut_active_id}.cube")
+                        if os.path.exists(lut_file):
+                            # The first videoconvert ensures lut3d gets a supported format (like RGB)
+                            lut_str = f"! videoconvert ! lut3d file={lut_file} "
+                            logger.info(f"Injecting LUT3D element into HDMI branch: {lut_file}")
+                        else:
+                            logger.error(f"LUT file {lut_file} not found on disk.")
+                    else:
+                        logger.error(f"Active LUT ID {self._hdmi_lut_active_id} not found in manifest.")
+            except Exception as e:
+                logger.error(f"Failed to read LUT manifest: {e}")
+
         return (
-            f"t_raw. ! queue name=q_hdmi max-size-buffers=2 leaky=downstream ! videoconvert ! video/x-raw,format=BGRx ! "
+            f"t_raw. ! queue name=q_hdmi max-size-buffers=2 leaky=downstream {lut_str}! videoconvert ! video/x-raw,format=BGRx ! "
             f"kmssink name=kmssink {connector_prop}sync=false"
+        )
+
+    def _build_ndi_branch(self) -> str:
+        """
+        NDI output branch:
+        queue → videoconvert → ndisinkcombiner → ndisink
+        """
+        if not self._ndi_enabled:
+            return ""
+
+        return (
+            f't_raw. ! queue name=q_ndi max-size-buffers=2 leaky=downstream '
+            f'! videoconvert ! video/x-raw,format=UYVY '
+            f'! ndisinkcombiner name=ndi_combiner '
+            f'! ndisink ndi-name="{self._ndi_name}" '
         )
 
     def _build_pipeline_string(self) -> str:
@@ -307,9 +331,9 @@ class FPVPipeline:
         branches = [
             self._build_srt_branch(),
             self._build_rtmp_branch(),
-            self._build_record_branch(),
             self._build_preview_branch(),
             self._build_hdmi_branch(),
+            self._build_ndi_branch(),
         ]
         
         # Filter out disabled branches (empty strings)
@@ -473,7 +497,7 @@ class FPVPipeline:
         self._stats["running"] = False
 
         if self._pipeline:
-            # Send EOS to flush all elements and finalize any recording files
+            # Send EOS to flush all elements
             self._pipeline.send_event(Gst.Event.new_eos())
 
             # Give elements up to 5 s to finish (e.g. finalize MP4 moov atom)
@@ -571,12 +595,7 @@ class FPVPipeline:
                 self._stats["dropped_frames"] = self._dropped_frames
 
         elif msg_type == Gst.MessageType.ELEMENT:
-            # splitmuxsink emits a "splitmuxsink-fragment-closed" element message
-            # when it finishes writing an MP4 segment.
-            struct = message.get_structure()
-            if struct and struct.get_name() == "splitmuxsink-fragment-closed":
-                location = struct.get_string("location")
-                logger.info("Recording segment finalized: %s", location)
+            pass # No longer handling element messages
 
     # ── Public statistics API ────────────────────────────────────────────────────
 
@@ -669,10 +688,14 @@ async def main():
     # Merge outputs into config dict expected by FPVPipeline
     cfg["srt_url"] = outputs.get("srt", {}).get("url") if outputs.get("srt", {}).get("enabled") else None
     cfg["rtmp_url"] = outputs.get("rtmp", {}).get("url") if outputs.get("rtmp", {}).get("enabled") else None
-    cfg["local_record"] = outputs.get("local_record", {}).get("enabled", False)
-    cfg["local_record_path"] = outputs.get("local_record", {}).get("path", "/record")
     cfg["hdmi_enabled"] = outputs.get("hdmi", {}).get("enabled", False)
     cfg["hdmi_connector_id"] = outputs.get("hdmi", {}).get("connector_id", 0)
+    cfg["ndi_enabled"] = (os.environ.get("FPVLINK_NDI") == "1") or full_cfg.get("ndi_enabled", False)
+    cfg["ndi_name"] = os.environ.get("FPVLINK_NDI_NAME") or full_cfg.get("ndi_name", "FPVLink")
+    
+    cfg["hdmi_lut_enabled"] = full_cfg.get("hdmi_lut_enabled", False)
+    cfg["hdmi_lut_active_id"] = full_cfg.get("hdmi_lut_active_id", "")
+    cfg["system_dir"] = os.path.dirname(config_path)
     
     logger.info("Starting pipeline process...")
     

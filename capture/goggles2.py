@@ -75,6 +75,7 @@ import os
 import struct
 import subprocess
 import sys
+import socket
 import time
 from pathlib import Path
 from typing import Iterator, Optional
@@ -608,7 +609,7 @@ class Goggles2Capture:
     # Gadget setup
     # ------------------------------------------------------------------
 
-    def setup(self) -> None:
+    def setup(self, if_absent: bool = False) -> None:
         """
         Configure the USB gadget using ConfigFS + FunctionFS.
 
@@ -625,7 +626,13 @@ class Goggles2Capture:
 
         Must be called as root.  Call teardown() when done.
         """
-        import select as _select
+        self.check_prerequisites()
+        if if_absent and (self._gadget_dir / "idVendor").exists():
+            log.info("Gadget directory already exists. --if-absent skipping setup.")
+            return
+
+        import select
+        import socket
         import threading
 
         self.check_prerequisites()
@@ -715,7 +722,7 @@ class Goggles2Capture:
             log.info("ep0 event loop started.")
             while self._ep0_running:
                 try:
-                    r, _, _ = _select.select([ep0_fd], [], [], 1.0)
+                    r, _, _ = select.select([ep0_fd], [], [], 1.0)
                     if not r:
                         continue
                     data = os.read(ep0_fd, 12)
@@ -798,15 +805,58 @@ class Goggles2Capture:
         ep_out_path = self._ep_out_path or (self._ffs_dir / "ep1")
         ep_in_path  = self._ffs_dir / "ep2"
 
-        sink = callback or (
-            lambda data: sys.stdout.buffer.write(data) or sys.stdout.buffer.flush()
-        )
+        sock = None
+        last_conn_try = 0
+        def socket_sink(data):
+            nonlocal sock, last_conn_try
+            if sock is None:
+                if time.monotonic() - last_conn_try < 0.5:
+                    return
+                last_conn_try = time.monotonic()
+                try:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.connect("/run/fpvlink/live.sock")
+                    s.settimeout(0.5)
+                    sock = s
+                    log.info("Connected to pipeline socket")
+                except OSError:
+                    sock = None
+                    return
+            try:
+                sock.sendall(len(data).to_bytes(4, 'big') + data)
+            except (BrokenPipeError, ConnectionResetError, BlockingIOError, OSError):
+                sock.close()
+                sock = None
+
+        sink = callback or socket_sink
 
         self._streaming    = True
         total_bytes        = 0
         duml_tx_count      = 0
         handshake_complete = False
         t_start            = time.monotonic()
+
+        def forward_video(video: bytes, source_desc: str) -> None:
+            """
+            Forward a chunk of raw H.264 video to the sink.
+
+            The DJI goggles intermix H.264 NAL units with DUML command packets
+            on the same bulk-OUT endpoint.  Video reaches us through several
+            routes (a LogicLink video port, DUML cmd_set 0x02 transport, and
+            bare NAL bytes between DUML frames); they all funnel through here so
+            handshake detection and byte accounting stay consistent.
+            """
+            nonlocal handshake_complete, total_bytes
+            if not video:
+                return
+            if not handshake_complete:
+                handshake_complete = True
+                print(f"[FPVLink] Handshake complete ({duml_tx_count} DUML ACKs) — streaming H.264!", file=sys.stderr, flush=True)
+                log.info("First video payload (%s): %s", source_desc, video[:8].hex())
+                if not video.startswith(b'\x00\x00\x00\x01') and not video.startswith(b'\x00\x00\x01'):
+                    log.warning("WARNING: First video payload does NOT start with an H.264 Annex B start code!")
+            total_bytes += len(video)
+            sink(video)
 
         last_payloads = {}
 
@@ -871,7 +921,7 @@ class Goggles2Capture:
 
                             while len(rx_buffer) >= 8:
                                 if rx_buffer[0] != 0x55 or rx_buffer[1] != 0xCC:
-                                    # Desync, find next 0x55 0xCC
+                                    # Desync — resync to the next LogicLink magic.
                                     idx = rx_buffer.find(b'\x55\xcc', 1)
                                     if idx != -1:
                                         log.warning("LogicLink desync! Skipping %d bytes to next magic.", idx)
@@ -937,21 +987,11 @@ class Goggles2Capture:
                                         duml_tx_count += 1
                                     except OSError as exc:
                                         log.warning("Failed to send DUML response: %s", exc)
-                                
+
+
                                 elif port == 0x574A:
-                                    # Raw H.264 video
-                                    if not handshake_complete:
-                                        handshake_complete = True
-                                        print(f"[FPVLink] Handshake complete ({duml_tx_count} DUML ACKs) — streaming H.264!", file=sys.stderr, flush=True)
-                                        
-                                        # Sanity check first bytes
-                                        hex_prefix = payload[:8].hex()
-                                        log.info("First video payload (port 0x574A): %s", hex_prefix)
-                                        if not payload.startswith(b'\x00\x00\x00\x01') and not payload.startswith(b'\x00\x00\x01'):
-                                            log.warning("WARNING: First video payload does NOT start with an H.264 Annex B start code!")
-                                    
-                                    total_bytes += len(payload)
-                                    sink(payload)
+                                    # Raw H.264 video (LogicLink video port)
+                                    forward_video(payload, "port 0x574A")
                                 
                             # Check if we need to send the keep-alive
                             now = time.monotonic()
@@ -975,8 +1015,17 @@ class Goggles2Capture:
                                     payload = bytes(payload_a),
                                 )
                                 seq_counter += 1
+                                try:
+                                    ep_in.write(cmd_a)
+                                    ep_in.flush()
+                                    log.info("camcap_common keep-alive sent to 0x28.")
+                                except OSError as exc:
+                                    log.warning("Failed to send keep-alive A: %s", exc)
                                 
-                                # Command B: dst=0x3C, cmd_set=0x00, cmd_id=0x88, cmd_type=0x40
+                                # Command B: dst=0x3C, cmd_set=0x00, cmd_id=0x88, cmd_type=0x40.
+                                # The "APP" (0x41 0x50 0x50) payload registers us as the
+                                # DJI Fly app and requests the live view — this is what
+                                # makes the goggles start pushing video on port 0x574A.
                                 payload_b = bytes.fromhex("17 00 00 23 00 41 50 50 00 00 00 00 00 02")
                                 cmd_b = build_duml_ack(
                                     seq     = seq_counter,
@@ -988,14 +1037,12 @@ class Goggles2Capture:
                                     payload = payload_b,
                                 )
                                 seq_counter += 1
-                                
                                 try:
-                                    ep_in.write(cmd_a)
                                     ep_in.write(cmd_b)
                                     ep_in.flush()
-                                    log.info("DUML Keep-Alive commands A+B sent (counter=0x%02X).", payload_a[4])
+                                    log.info("live-view keep-alive B sent to 0x3C.")
                                 except OSError as exc:
-                                    log.warning("Failed to send DUML keep-alive: %s", exc)
+                                    log.warning("Failed to send keep-alive B: %s", exc)
 
                 except OSError as exc:
                     log.warning("Inner stream loop error: %s", exc)
@@ -1129,6 +1176,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--setup",    action="store_true",
                    help="Configure USB gadget (requires root, Linux).")
+    p.add_argument("--if-absent", action="store_true",
+                   help="Skip setup if gadget already exists.")
     p.add_argument("--stream",   action="store_true",
                    help="Stream video from goggles to stdout.")
     p.add_argument("--teardown", action="store_true",
@@ -1151,7 +1200,7 @@ def main() -> None:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    if not (args.setup or args.stream or args.teardown):
+    if not (args.setup or args.if_absent or args.stream or args.teardown):
         print("Specify --setup, --stream, or --teardown.  Use --help for options.")
         sys.exit(1)
 
@@ -1166,8 +1215,8 @@ def main() -> None:
     try:
         if args.teardown:
             cap.teardown()
-        if args.setup:
-            cap.setup()
+        if args.setup or args.if_absent:
+            cap.setup(if_absent=args.if_absent)
         if args.stream:
             cap.stream()
     except KeyboardInterrupt:

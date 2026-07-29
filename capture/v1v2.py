@@ -55,6 +55,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import socket
 import time
 from typing import AsyncIterator, Callable, Optional
 
@@ -389,41 +390,53 @@ class V1V2Capture:
 
         Reads chunks from the bulk-IN endpoint forever (until ``stop()``
         is called from another thread or a USB error occurs).
-
-        Each received chunk is passed to ``self.chunk_callback`` if set,
-        otherwise written to ``sys.stdout.buffer``.
-
-        This is the main entry point for CLI ``--capture`` mode.
+        Pushes to the pipeline socket.
         """
-        sink = self.chunk_callback or (lambda data: sys.stdout.buffer.write(data) or sys.stdout.buffer.flush())
-
         total_bytes = 0
         t_start     = time.monotonic()
         log.info("Read loop started (buffer=%d bytes, timeout=%d ms).",
                  READ_BUFFER_SIZE, USB_TIMEOUT_MS)
 
+        sock = None
+        last_connect_try = 0.0
+        SINK_PATH = "/run/fpvlink/live.sock"
+
         try:
             while self._streaming:
+                if sock is None and time.monotonic() - last_connect_try > 0.5:
+                    last_connect_try = time.monotonic()
+                    try:
+                        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        s.connect(SINK_PATH)
+                        s.settimeout(0.5)
+                        sock = s
+                        log.info("Connected to pipeline socket")
+                    except OSError:
+                        sock = None
+
                 chunk = self.read_chunk()
                 if chunk:
                     total_bytes += len(chunk)
-                    sink(chunk)
-                    elapsed = time.monotonic() - t_start
-                    if elapsed > 0:
-                        rate_kbps = (total_bytes * 8) / elapsed / 1_000
-                        log.debug("Received %d B  total=%d B  rate=%.1f kbps",
-                                  len(chunk), total_bytes, rate_kbps)
+                    if sock is not None:
+                        try:
+                            sock.sendall(len(chunk).to_bytes(4, 'big') + chunk)
+                        except (BrokenPipeError, ConnectionResetError, BlockingIOError, OSError):
+                            sock.close()
+                            sock = None
         except usb.core.USBError as exc:
             log.error("USB error during read loop: %s", exc)
+            if sock: sock.close()
+            sys.exit(1)
         except KeyboardInterrupt:
             log.info("Interrupted by user.")
         finally:
             elapsed = time.monotonic() - t_start
             log.info(
-                "Read loop ended.  Total: %d bytes in %.2f s (avg %.1f kbps).",
-                total_bytes, elapsed,
-                (total_bytes * 8) / elapsed / 1_000 if elapsed > 0 else 0,
+                "Read loop ended.  Total: %d bytes in %.2f s",
+                total_bytes, elapsed
             )
+            if sock: sock.close()
+            sys.exit(1)
 
     async def async_read_loop(self) -> AsyncIterator[bytes]:
         """

@@ -12,9 +12,10 @@ const http           = require('http');
 const WebSocket      = require('ws');
 const path           = require('path');
 const fs             = require('fs');
-const { spawn }      = require('child_process');
+const { spawn, execFile } = require('child_process');
 const readline       = require('readline');
 const dgram          = require('dgram');
+const multer         = require('multer');
 
 // ─────────────────────────────────────────────
 // Paths
@@ -23,6 +24,76 @@ const ROOT_DIR    = path.resolve(__dirname, '..');
 const SYSTEM_DIR  = path.join(ROOT_DIR, 'system');
 const CONFIG_PATH = path.join(SYSTEM_DIR, 'config.json');
 const WEB_DIR     = __dirname;
+
+const LUTS_DIR = path.join(SYSTEM_DIR, 'luts');
+const LUTS_MANIFEST = path.join(LUTS_DIR, 'manifest.json');
+const LOGS_DIR = path.join(SYSTEM_DIR, 'logs', 'sessions');
+
+// Ensure directories exist
+if (!fs.existsSync(LUTS_DIR)) {
+  fs.mkdirSync(LUTS_DIR, { recursive: true });
+}
+if (!fs.existsSync(LUTS_MANIFEST)) {
+  fs.writeFileSync(LUTS_MANIFEST, '[]');
+}
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+
+function cleanupSessionLogs() {
+  try {
+    const files = fs.readdirSync(LOGS_DIR)
+      .filter(f => f.startsWith('session_') && f.endsWith('.jsonl'))
+      .sort(); // Lexicographical sort works for timestamp prefixes
+    
+    // Keep the last 50 sessions
+    const MAX_SESSIONS = 50;
+    if (files.length > MAX_SESSIONS) {
+      const toDelete = files.slice(0, files.length - MAX_SESSIONS);
+      for (const file of toDelete) {
+        fs.unlinkSync(path.join(LOGS_DIR, file));
+        logger.info(`Pruned old session log: ${file}`);
+      }
+    }
+  } catch (e) {
+    logger.error(`Failed to cleanup session logs: ${e.message}`);
+  }
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, LUTS_DIR)
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname);
+    cb(null, `lut_${Date.now()}_${Math.floor(Math.random()*1000)}${ext}`)
+  }
+})
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    if (path.extname(file.originalname).toLowerCase() === '.cube') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only .cube files are allowed'));
+    }
+  }
+});
+
+function readLutsManifest() {
+  try {
+    if (!fs.existsSync(LUTS_MANIFEST)) return [];
+    return JSON.parse(fs.readFileSync(LUTS_MANIFEST, 'utf8'));
+  } catch (err) {
+    logger.error(`Failed to read LUTs manifest: ${err.message}`);
+    return [];
+  }
+}
+
+function writeLutsManifest(manifest) {
+  fs.writeFileSync(LUTS_MANIFEST, JSON.stringify(manifest, null, 2), 'utf8');
+}
 
 const PORT = 8080;
 
@@ -61,10 +132,14 @@ const CONFIG_DEFAULTS = {
   rtmp_enabled:     false,
   rtmp_url:         'rtmp://live.twitch.tv/app',
   rtmp_key:         '',
-  record_enabled:   false,
+  ndi_enabled:      false,
+  ndi_name:         'FPVLink',
+  hdmi_lut_enabled: false,
+  hdmi_lut_active_id: '',
   bitrate_mbps:     50,
   device_name:      'FPVLink',
   firmware_version: '1.0.0',
+  auto_connect:     true,
 };
 
 function readConfig() {
@@ -106,7 +181,13 @@ function validateConfig(body) {
   if (body.rtmp_key !== undefined && typeof body.rtmp_key !== 'string') {
     errors.push('rtmp_key must be a string');
   }
-  ['srt_enabled', 'rtmp_enabled', 'record_enabled'].forEach((k) => {
+  if (body.ndi_name !== undefined && typeof body.ndi_name !== 'string') {
+    errors.push('ndi_name must be a string');
+  }
+  if (body.hdmi_lut_active_id !== undefined && typeof body.hdmi_lut_active_id !== 'string') {
+    errors.push('hdmi_lut_active_id must be a string');
+  }
+  ['srt_enabled', 'rtmp_enabled', 'ndi_enabled', 'hdmi_lut_enabled', 'auto_connect'].forEach((k) => {
     if (body[k] !== undefined && typeof body[k] !== 'boolean') {
       errors.push(`${k} must be a boolean`);
     }
@@ -118,7 +199,8 @@ function validateConfig(body) {
 // Runtime state
 // ─────────────────────────────────────────────
 const state = {
-  streaming:      false,
+  capture_enabled: false,
+  pipeline_status: 'standby', // 'live', 'standby', 'offline'
   usb_status:     'disconnected',   // 'connected' | 'disconnected'
   fps:            0,
   bitrate_kbps:   0,
@@ -127,12 +209,21 @@ const state = {
   dropped_frames: 0,
   resolution:     '—',
   startedAt:      null,
+  // Hardware Telemetry
+  soc_temp:              null,
+  thermal_state:         'NORMAL',
+  storage_free_gb:       null,
+  storage_total_gb:      null,
+  storage_usage_percent: null,
+  storage_state:         'NORMAL',
 };
 
 let captureProcess  = null;
 let pipelineProcess = null;
 let standbyProcess  = null;
-let isTransitioning = false;
+let sessionLogStream = null;
+let sessionLogTick   = 0;
+let currentSessionId = null;
 
 function uptimeSeconds() {
   if (!state.startedAt) return 0;
@@ -156,97 +247,100 @@ function captureScript(cfg) {
   return { script: path.join(ROOT_DIR, 'capture', 'goggles2.py'), args: ['--teardown', '--setup', '--stream', '--verbose'] };
 }
 
-function spawnCapture(cfg) {
-  const { script, args } = captureScript(cfg);
-  logger.info(`Spawning capture process: sudo python3 ${script} ${args.join(' ')}`);
 
-  const proc = spawn('sudo', ['python3', script, ...args], {
-    env: { ...process.env, FPVLINK_CONFIG: CONFIG_PATH, HOME: '/home/fpvlink' },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+let sessionCloseTimeout = null;
+let pipelineHeartbeatTimeout = null;
+let captureBackoffMs = 1000;
+let captureSpawnTime = 0;
+let captureLoopActive = false;
 
-  proc.stdout.on('data', (data) => {
-    // Forward raw video data to pipeline stdin
-    if (pipelineProcess && pipelineProcess.stdin && pipelineProcess.stdin.writable) {
-      try {
-        pipelineProcess.stdin.write(data);
-      } catch (e) {
-        // Ignore synchronous stream errors like EPIPE during shutdown
-      }
+// Internal API Server for pipeline POSTs
+const internalApp = express();
+internalApp.use(express.json());
+internalApp.post('/internal/status', (req, res) => {
+  const body = req.body || {};
+  if (['live', 'standby'].includes(body.status)) {
+    handlePipelineStatusChange(body.status);
+  }
+  // Live stats reported by the pipeline (see report_status_loop in pipeline.py)
+  if (typeof body.fps === 'number')            state.fps            = body.fps;
+  if (typeof body.bitrate_kbps === 'number')   state.bitrate_kbps   = body.bitrate_kbps;
+  if (typeof body.resolution === 'string')     state.resolution     = body.resolution;
+  if (typeof body.bytes_received === 'number') state.bytes_received = body.bytes_received;
+  if (typeof body.dropped_frames === 'number') state.dropped_frames = body.dropped_frames;
+  res.json({ok:true});
+});
+internalApp.listen(8081, '127.0.0.1', () => {
+  logger.info('Internal API listening on 127.0.0.1:8081');
+});
+
+function handlePipelineStatusChange(newStatus) {
+  // Heartbeat watchdog
+  if (pipelineHeartbeatTimeout) clearTimeout(pipelineHeartbeatTimeout);
+  pipelineHeartbeatTimeout = setTimeout(() => {
+    logger.warn('Pipeline heartbeat lost. Marking offline.');
+    handlePipelineStatusChange('offline');
+  }, 6000);
+
+  if (state.pipeline_status === newStatus) return;
+  const oldStatus = state.pipeline_status;
+  state.pipeline_status = newStatus;
+  logger.info(`Pipeline status changed: ${oldStatus} -> ${newStatus}`);
+
+  if (newStatus === 'live') {
+    if (sessionCloseTimeout) {
+      clearTimeout(sessionCloseTimeout);
+      sessionCloseTimeout = null;
     }
-  });
-
-  const captureStderr = readline.createInterface({ input: proc.stderr });
-  captureStderr.on('line', (line) => {
-    logger.info(`[capture] ${line}`);
-    parseStatLine(line);
-  });
-
-  proc.on('close', (code) => {
-    logger.warn(`Capture process exited with code ${code}`);
-    if (state.streaming) {
-      state.usb_status = 'disconnected';
-      state.streaming  = false;
+    if (!currentSessionId) {
+      startSessionLog();
     }
-  });
-
-  proc.on('error', (err) => {
-    logger.error(`Capture process error: ${err.message}`);
-  });
-
-  return proc;
+  } else if (newStatus === 'standby' || newStatus === 'offline') {
+    if (currentSessionId && !sessionCloseTimeout) {
+      sessionCloseTimeout = setTimeout(() => {
+        stopSessionLog();
+        sessionCloseTimeout = null;
+      }, 5000); // 5s debounce
+    }
+  }
 }
 
-function spawnPipeline(cfg) {
-  const script = path.join(ROOT_DIR, 'pipeline', 'pipeline.py');
-  logger.info(`Spawning pipeline process: python3 ${script}`);
+function startSessionLog() {
+  currentSessionId = Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  const cfg = readConfig();
+  delete cfg.rtmp_key;
+  try {
+    sessionLogStream = fs.createWriteStream(path.join(LOGS_DIR, `session_${currentSessionId}.jsonl`), { flags: 'a' });
+    sessionLogStream.on('error', (err) => {
+      logger.error(`Session log error: ${err.message}`);
+      sessionLogStream = null;
+    });
+    sessionLogStream.write(JSON.stringify({ event: 'stream_started', timestamp: new Date().toISOString(), sessionId: currentSessionId, config: cfg }) + '\n');
+    state.startedAt = Date.now();
+  } catch (e) {
+    logger.error(`Failed to start session logging: ${e.message}`);
+  }
+}
 
-  const env = {
-    ...process.env,
-    FPVLINK_CONFIG:   CONFIG_PATH,
-    FPVLINK_BITRATE:  String(cfg.bitrate_mbps || 50),
-    FPVLINK_SRT:      cfg.srt_enabled  ? '1' : '0',
-    FPVLINK_SRT_URL:  cfg.srt_url  || '',
-    FPVLINK_RTMP:     cfg.rtmp_enabled ? '1' : '0',
-    FPVLINK_RTMP_URL: cfg.rtmp_url || '',
-    FPVLINK_RTMP_KEY: cfg.rtmp_key || '',
-    FPVLINK_RECORD:   cfg.record_enabled ? '1' : '0',
-  };
-
-  const proc = spawn('python3', [script], {
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  proc.stdin.on('error', (err) => {
-    if (err.code === 'EPIPE') {
-      logger.debug('Pipeline stdin closed (EPIPE)');
-    } else {
-      logger.error(`Pipeline stdin error: ${err.message}`);
-    }
-  });
-
-  const pipelineStdout = readline.createInterface({ input: proc.stdout });
-  pipelineStdout.on('line', (line) => {
-    logger.info(`[pipeline] ${line}`);
-    parseStatLine(line);
-  });
-
-  const pipelineStderr = readline.createInterface({ input: proc.stderr });
-  pipelineStderr.on('line', (line) => {
-    logger.warn(`[pipeline:err] ${line}`);
-  });
-
-  proc.on('close', (code) => {
-    logger.warn(`Pipeline process exited with code ${code}`);
-    if (state.streaming) state.streaming = false;
-  });
-
-  proc.on('error', (err) => {
-    logger.error(`Pipeline process error: ${err.message}`);
-  });
-
-  return proc;
+function stopSessionLog() {
+  if (sessionLogStream) {
+    try {
+      sessionLogStream.write(JSON.stringify({
+        event: 'stream_ended',
+        timestamp: new Date().toISOString(),
+        summary: {
+          uptime_seconds: uptimeSeconds(),
+          bytes_received: state.bytes_received,
+          dropped_frames: state.dropped_frames
+        }
+      }) + '\n');
+      sessionLogStream.end();
+    } catch(e) {}
+    sessionLogStream = null;
+  }
+  currentSessionId = null;
+  state.startedAt = null;
+  cleanupSessionLogs();
 }
 
 function spawnStandby(cfg) {
@@ -297,10 +391,6 @@ async function killProcessAsync(proc) {
   });
 }
 
-/**
- * Parse stat lines emitted by capture / pipeline scripts.
- * Supports legacy key-value format and new JSON [STATS] format.
- */
 function parseStatLine(line) {
   let updated = false;
 
@@ -339,72 +429,121 @@ function parseStatLine(line) {
   return updated;
 }
 
-async function startStream() {
-  if (isTransitioning) throw new Error('Transition in progress');
-  if (state.streaming) throw new Error('Already streaming');
-  
-  isTransitioning = true;
-  try {
+async function superviseCaptureLoop() {
+  if (captureLoopActive) return;
+  captureLoopActive = true;
+  state.capture_enabled = true;
+  captureBackoffMs = 1000;
+
+  while (state.capture_enabled) {
     const cfg = readConfig();
-    logger.info('Starting stream...');
+    captureSpawnTime = Date.now();
+    captureProcess = spawnCapture(cfg);
+    
+    await new Promise((resolve) => {
+      captureProcess.on('close', resolve);
+      captureProcess.on('error', resolve);
+    });
 
-    if (standbyProcess) {
-      await killProcessAsync(standbyProcess);
-      standbyProcess = null;
+    captureProcess = null;
+    state.usb_status = 'disconnected';
+
+    if (!state.capture_enabled) break;
+
+    const runTime = Date.now() - captureSpawnTime;
+    if (runTime > 10000) {
+      captureBackoffMs = 1000; // Success reset
+    } else {
+      captureBackoffMs = Math.min(captureBackoffMs * 2, 8000);
     }
+    logger.warn(`Capture exited. Respawning in ${captureBackoffMs}ms...`);
+    await new Promise(r => setTimeout(r, captureBackoffMs));
+  }
+  captureLoopActive = false;
+}
 
-    pipelineProcess = spawnPipeline(cfg);
-    // Small delay so pipeline is ready to receive data
-    await new Promise((r) => setTimeout(r, 300));
-    captureProcess  = spawnCapture(cfg);
+async function enableCapture() {
+  if (state.capture_enabled) return;
+  logger.info('Enabling capture supervision...');
+  superviseCaptureLoop(); // async background
+}
 
-    state.streaming  = true;
-    state.startedAt  = Date.now();
-    state.usb_status = 'connected';
-    logger.info('Stream started');
-  } finally {
-    isTransitioning = false;
+async function disableCapture() {
+  if (!state.capture_enabled) return;
+  logger.info('Disabling capture supervision...');
+  state.capture_enabled = false;
+  if (captureProcess) {
+    await killProcessAsync(captureProcess);
+    captureProcess = null;
   }
 }
 
-async function stopStream() {
-  if (isTransitioning) throw new Error('Transition in progress');
-  isTransitioning = true;
-  
-  try {
-    logger.info('Stopping stream...');
-    
-    if (captureProcess) {
-      await killProcessAsync(captureProcess);
-      captureProcess = null;
-    }
-    if (pipelineProcess) {
-      await killProcessAsync(pipelineProcess);
-      pipelineProcess = null;
-    }
-    
-    state.streaming      = false;
-    state.startedAt      = null;
-    state.fps            = 0;
-    state.bitrate_kbps   = 0;
-    state.latency_ms     = 0;
-    state.bytes_received = 0;
-    state.dropped_frames = 0;
-    state.resolution     = '—';
-    state.usb_status     = 'disconnected';
-    
-    const cfg = readConfig();
-    standbyProcess = spawnStandby(cfg);
-    
-    logger.info('Stream stopped');
-  } finally {
-    isTransitioning = false;
+// Initial Boot Setup for Gadget
+execFile('sudo', ['python3', path.join(ROOT_DIR, 'capture', 'goggles2.py'), '--setup', '--if-absent'], (error, stdout, stderr) => {
+  if (error) {
+    logger.error(`Boot gadget setup failed: ${error.message}`);
+  } else {
+    logger.info('Boot gadget setup checked/completed.');
   }
+});
+
+function spawnCapture(cfg) {
+  const { script, args } = captureScript(cfg);
+  logger.info(`Spawning capture process: sudo python3 ${script} ${args.join(' ')}`);
+
+  const proc = spawn('sudo', ['python3', script, ...args], {
+    env: { ...process.env, FPVLINK_CONFIG: CONFIG_PATH, HOME: '/home/fpvlink' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  proc.stdout.on('data', (data) => {
+    // Forward raw video data to pipeline stdin
+    if (pipelineProcess && pipelineProcess.stdin && pipelineProcess.stdin.writable) {
+      try {
+        pipelineProcess.stdin.write(data);
+      } catch (e) {
+        // Ignore synchronous stream errors like EPIPE during shutdown
+      }
+    }
+  });
+
+  const captureStderr = readline.createInterface({ input: proc.stderr });
+  captureStderr.on('line', (line) => {
+    logger.info(`[capture] ${line}`);
+    if (line.includes('[FPVLink] Goggles connected')) {
+      state.usb_status = 'connected';
+    } else if (line.includes('[FPVLink] Waiting for goggles USB connection')) {
+      state.usb_status = 'disconnected';
+    }
+
+    // Parse basic stats for the dashboard UI
+    if (line.includes('[STATS]')) {
+      try {
+        const jsonStr = line.substring(line.indexOf('{'));
+        const stats = JSON.parse(jsonStr);
+        if (stats.fps !== undefined) state.fps = stats.fps;
+        if (stats.bitrate_kbps !== undefined) state.bitrate_kbps = stats.bitrate_kbps;
+      } catch (e) {}
+    }
+  });
+
+  proc.on('close', (code) => {
+    logger.warn(`Capture process exited with code ${code}`);
+    if (state.streaming) {
+      state.usb_status = 'disconnected';
+      state.streaming  = false;
+    }
+  });
+
+  proc.on('error', (err) => {
+    logger.error(`Capture process error: ${err.message}`);
+  });
+
+  return proc;
 }
 
-// ─────────────────────────────────────────────
-// Express app
-// ─────────────────────────────────────────────
+
+// (pipeline and standby are now managed by systemd)
 const app = express();
 app.use(express.json());
 app.use(express.static(WEB_DIR));
@@ -413,7 +552,8 @@ app.use(express.static(WEB_DIR));
 app.get('/api/status', (req, res) => {
   const cfg = readConfig();
   res.json({
-    streaming:      state.streaming,
+    capture_enabled: state.capture_enabled,
+    pipeline_status: state.pipeline_status,
     usb_status:     state.usb_status,
     fps:            state.fps,
     bitrate_kbps:   state.bitrate_kbps,
@@ -449,10 +589,10 @@ app.post('/api/config', (req, res) => {
 });
 
 // POST /api/stream/start
-app.post('/api/stream/start', async (req, res) => {
+app.post('/api/capture/enable', async (req, res) => {
   try {
-    await startStream();
-    res.json({ ok: true, message: 'Stream started' });
+    await enableCapture();
+    res.json({ ok: true, message: 'Capture enabled' });
   } catch (err) {
     if (err.message === 'Transition in progress') {
       logger.warn('Start stream rejected: Transition in progress');
@@ -464,19 +604,92 @@ app.post('/api/stream/start', async (req, res) => {
 });
 
 // POST /api/stream/stop
-app.post('/api/stream/stop', async (req, res) => {
+app.post('/api/capture/disable', async (req, res) => {
   try {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     const ua = req.headers['user-agent'] || 'unknown';
     logger.warn(`[WATCHDOG HUNT] /api/stream/stop requested by IP: ${ip}, User-Agent: ${ua}`);
-    await stopStream();
-    res.json({ ok: true, message: 'Stream stopped' });
+    await disableCapture();
+    res.json({ ok: true, message: 'Capture disabled' });
   } catch (err) {
     if (err.message === 'Transition in progress') {
       logger.warn('Stop stream rejected: Transition in progress');
       return res.status(409).json({ error: err.message });
     }
     logger.error(`Stop stream failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/luts
+app.get('/api/luts', (req, res) => {
+  res.json(readLutsManifest());
+});
+
+// POST /api/lut-upload
+app.post('/api/lut-upload', upload.single('lutFile'), (req, res) => {
+  try {
+    const manifest = readLutsManifest();
+    if (manifest.length >= 5) {
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(409).json({ error: 'Maximum 5 LUTs allowed. Please delete one first.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Basic file validation (check for LUT_3D_SIZE)
+    const content = fs.readFileSync(req.file.path, 'utf8');
+    if (!content.includes('LUT_3D_SIZE')) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'Invalid 3D LUT file' });
+    }
+
+    const id = path.basename(req.file.filename, path.extname(req.file.filename));
+    const newLut = {
+      id,
+      original_filename: req.file.originalname,
+      display_name: req.body.displayName || req.file.originalname,
+      uploaded_at: new Date().toISOString()
+    };
+
+    manifest.push(newLut);
+    writeLutsManifest(manifest);
+    logger.info(`LUT uploaded: ${newLut.display_name}`);
+    res.json({ ok: true, lut: newLut, manifest });
+  } catch (err) {
+    logger.error(`LUT upload failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/luts/:id
+app.delete('/api/luts/:id', (req, res) => {
+  try {
+    let manifest = readLutsManifest();
+    const id = req.params.id;
+    const lut = manifest.find(l => l.id === id);
+    if (!lut) return res.status(404).json({ error: 'LUT not found' });
+
+    // Remove file
+    const filePath = path.join(LUTS_DIR, `${id}.cube`);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    manifest = manifest.filter(l => l.id !== id);
+    writeLutsManifest(manifest);
+
+    // If it was the active LUT, clear it from config
+    const config = readConfig();
+    if (config.hdmi_lut_active_id === id) {
+      config.hdmi_lut_active_id = '';
+      writeConfig(config);
+    }
+
+    logger.info(`LUT deleted: ${lut.display_name}`);
+    res.json({ ok: true, manifest, config });
+  } catch (err) {
+    logger.error(`LUT delete failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -530,20 +743,151 @@ function broadcastLog(line) {
   broadcast({ type: 'log', line });
 }
 
+// ─────────────────────────────────────────────
+// Hardware Telemetry Polling
+// ─────────────────────────────────────────────
+
+// Thermal Polling (every 2s)
+setInterval(async () => {
+  try {
+    const rawTemp = await fs.promises.readFile('/sys/class/thermal/thermal_zone0/temp', 'utf8');
+    const tempC = parseInt(rawTemp, 10) / 1000;
+    if (!isNaN(tempC)) {
+      state.soc_temp = parseFloat(tempC.toFixed(1));
+      
+      if (state.thermal_state === 'CRITICAL') {
+        if (state.soc_temp < 82) {
+          state.thermal_state = 'WARN';
+          logger.warn(`SOC Temperature recovered to WARN state (${state.soc_temp}°C)`);
+        }
+      } else if (state.thermal_state === 'WARN') {
+        if (state.soc_temp >= 85) {
+          state.thermal_state = 'CRITICAL';
+          logger.error(`CRITICAL: SOC Temperature is ${state.soc_temp}°C (Throttling)`);
+        } else if (state.soc_temp < 75) {
+          state.thermal_state = 'NORMAL';
+          logger.info(`SOC Temperature recovered to NORMAL (${state.soc_temp}°C)`);
+        }
+      } else {
+        // NORMAL
+        if (state.soc_temp >= 85) {
+          state.thermal_state = 'CRITICAL';
+          logger.error(`CRITICAL: SOC Temperature is ${state.soc_temp}°C (Throttling)`);
+        } else if (state.soc_temp >= 80) {
+          state.thermal_state = 'WARN';
+          logger.warn(`WARNING: SOC Temperature is high (${state.soc_temp}°C)`);
+        }
+      }
+    }
+  } catch (err) {
+    // Silently ignore if file doesn't exist (e.g. dev environment)
+    state.soc_temp = null;
+    state.thermal_state = 'NORMAL';
+  }
+}, 2000);
+
+// Storage Polling (every 15s)
+setInterval(() => {
+  // Monitor root partition for low space (passive warning)
+  execFile('df', ['-k', '/'], { timeout: 1000 }, (error, stdout, stderr) => {
+    if (error) {
+      // Could be a timeout. Gracefully degrade.
+      state.storage_free_gb = null;
+      state.storage_total_gb = null;
+      state.storage_usage_percent = null;
+      state.storage_state = 'NORMAL';
+      return;
+    }
+    
+    const lines = stdout.trim().split('\n');
+    if (lines.length > 1) {
+      const parts = lines[1].trim().split(/\s+/);
+      if (parts.length >= 5) {
+        const totalK = parseInt(parts[1], 10);
+        const freeK = parseInt(parts[3], 10);
+        let usePctStr = parts[4].replace('%', '');
+        if (parts.length > 5 && parts[4] === '-') {
+           usePctStr = parts[5].replace('%', ''); // handle some df output formats
+        }
+        const usePct = parseInt(usePctStr, 10);
+        
+        if (!isNaN(totalK) && !isNaN(freeK)) {
+          state.storage_total_gb = parseFloat((totalK / 1024 / 1024).toFixed(2));
+          state.storage_free_gb = parseFloat((freeK / 1024 / 1024).toFixed(2));
+          state.storage_usage_percent = isNaN(usePct) ? 0 : usePct;
+          
+          if (state.storage_state === 'CRITICAL') {
+            if (state.storage_free_gb > 2.5) {
+              state.storage_state = 'WARN';
+              logger.warn(`Storage recovered to WARN state (${state.storage_free_gb} GB free)`);
+            }
+          } else if (state.storage_state === 'WARN') {
+            if (state.storage_free_gb <= 2.0) {
+              state.storage_state = 'CRITICAL';
+              logger.error(`CRITICAL: Storage almost full (${state.storage_free_gb} GB free).`);
+            } else if (state.storage_free_gb > 5.0 && state.storage_usage_percent < 90) {
+              state.storage_state = 'NORMAL';
+              logger.info(`Storage recovered to NORMAL (${state.storage_free_gb} GB free)`);
+            }
+          } else {
+            // NORMAL
+            if (state.storage_free_gb <= 2.0) {
+              state.storage_state = 'CRITICAL';
+              logger.error(`CRITICAL: Storage almost full (${state.storage_free_gb} GB free).`);
+            } else if (state.storage_free_gb <= 5.0 || state.storage_usage_percent >= 90) {
+              state.storage_state = 'WARN';
+              logger.warn(`WARNING: Storage is low (${state.storage_free_gb} GB free, ${state.storage_usage_percent}%)`);
+            }
+          }
+        }
+      }
+    }
+  });
+}, 15000);
+
 // Push real-time stats every 500 ms
 setInterval(() => {
-  broadcast({
-    type:           'stats',
+  const statsPayload = {
     fps:            state.fps,
     bitrate_kbps:   state.bitrate_kbps,
     latency_ms:     state.latency_ms,
     dropped_frames: state.dropped_frames,
     resolution:     state.resolution,
     usb_status:     state.usb_status,
-    streaming:      state.streaming,
     bytes_received: state.bytes_received,
     uptime_seconds: uptimeSeconds(),
+    
+    // Hardware Telemetry
+    soc_temp:              state.soc_temp,
+    thermal_state:         state.thermal_state,
+    storage_free_gb:       state.storage_free_gb,
+    storage_total_gb:      state.storage_total_gb,
+    storage_usage_percent: state.storage_usage_percent,
+    storage_state:         state.storage_state,
+  };
+  
+  broadcast({
+    type:           'stats',
+    ...statsPayload,
+    capture_enabled: state.capture_enabled,
+    pipeline_status: state.pipeline_status,
   });
+  
+  if (state.streaming && sessionLogStream) {
+    sessionLogTick++;
+    if (sessionLogTick >= 4) { // Log to disk every 2 seconds
+      sessionLogTick = 0;
+      try {
+        sessionLogStream.write(JSON.stringify({
+          event: 'stats',
+          timestamp: new Date().toISOString(),
+          ...statsPayload
+        }) + '\n');
+      } catch (e) {
+        logger.error(`Failed to write stats to session log: ${e.message}`);
+      }
+    }
+  }
 }, 500);
 
 // ─────────────────────────────────────────────
@@ -566,7 +910,11 @@ udpServer.bind(9002, '127.0.0.1');
 function shutdown(signal) {
   logger.info(`Received ${signal}, shutting down...`);
   (async () => {
-    if (state.streaming && !isTransitioning) await stopStream();
+    if (state.streaming && !isTransitioning) await disableCapture();
+    if (sessionLogStream) {
+      try { sessionLogStream.end(); } catch (e) {}
+      sessionLogStream = null;
+    }
     if (standbyProcess) await killProcessAsync(standbyProcess);
     server.close(() => {
       logger.info('HTTP server closed');
@@ -591,11 +939,14 @@ if (require.main === module) {
     logger.info(`Config path: ${CONFIG_PATH}`);
     
     const cfg = readConfig();
-    standbyProcess = spawnStandby(cfg);
+    // standbyProcess = spawnStandby(cfg); // Handled by systemd
+
+    if (cfg.auto_connect !== false) {
+      enableCapture();
+    }
   });
 }
 
 module.exports = {
-  parseStatLine,
   state
 };

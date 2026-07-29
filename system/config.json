@@ -40,7 +40,7 @@
     "_comment": "GStreamer pipeline / codec settings.",
 
     "bitrate_kbps": 8000,
-    "_bitrate_kbps_comment": "Target encode bitrate in kilobits per second for streaming outputs. Recording branch is not re-encoded (pass-through) so this only affects SRT/RTMP.",
+    "_bitrate_kbps_comment": "Target encode bitrate in kilobits per second for streaming outputs (SRT/RTMP).",
 
     "codec": "h264",
     "_codec_comment": "Output codec for streaming branches. Only 'h264' is currently supported. 'h265' output is planned for a future release.",
@@ -83,18 +83,6 @@
       "_buffer_ms_comment": "Internal RTMP output buffer in milliseconds. Increase if you see 'rtmpsink: buffer underflow' warnings."
     },
 
-    "local_record": {
-      "_comment": "Record the raw decoded stream to local MP4 files, split into segments.",
-      "enabled": true,
-      "path": "/record",
-      "_path_comment": "Directory to write MP4 segment files. The directory must be writable by the fpvlink user. Recommend a fast SD card or NVMe mount.",
-      "segment_duration_s": 300,
-      "_segment_duration_s_comment": "How long each MP4 segment should be, in seconds. 300s = 5-minute files. Shorter segments reduce data loss on power failure.",
-      "max_size_gb": 50,
-      "_max_size_gb_comment": "If total recording directory size exceeds this value (in GB), the oldest segments are deleted to make room. Set 0 to disable auto-cleanup.",
-      "filename_pattern": "fpvlink-%05d.mp4",
-      "_filename_pattern_comment": "splitmuxsink filename pattern. %05d is replaced by the segment index (00000, 00001, …)."
-    },
 
     "rtsp": {
       "_comment": "RTSP server (future feature — not yet implemented in v0.1.0).",
