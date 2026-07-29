@@ -168,6 +168,16 @@ Enable the **NDI Output** toggle in the dashboard (and optionally set a source n
 - Cost: ~44% of one CPU core for the NDI (SpeedHQ) encode at 1080p, on top of the ~19% for HDMI display — well within budget on the RK3588.
 - Config lives at `outputs.ndi` in `system/config.json` (`enabled`, `name`); the dashboard writes it there.
 
+### HDMI 3D LUT (working)
+
+Apply a `.cube` color-grading LUT to the HDMI output. In the dashboard, open **HDMI 3D LUT**, upload one or more `.cube` files (max 5), pick the active one, and toggle it on. The grade is applied by `fpvlut3d` — a small native GStreamer element FPVLink ships (`capture/fpvlut3d.c`), because GStreamer has no stock 3D-LUT element on this target. It does trilinear interpolation across the RK3588's cores, so 1080p60 stays real-time.
+
+- Built on-device by `setup/build-lut-plugin.sh` (a plain `gcc` build — no meson), producing `capture/libgstfpvlut3d.so`, which `capture/pipeline.py` loads via `GST_PLUGIN_PATH`. `setup/03-gstreamer.sh` runs this build automatically.
+- Enabling the LUT inserts `videoconvert ! fpvlut3d ! videoconvert` on the display branch (the zero-copy NV12 path is untouched while the LUT is off, so there's no idle cost).
+- Changing the LUT restarts the pipeline to apply (~3s standby blip), same as NDI.
+- Fail-safe: if the plugin isn't built or the `.cube` file is missing, the pipeline logs it and shows an **ungraded** picture rather than blacking out HDMI.
+- Config: `hdmi_lut_enabled` and `hdmi_lut_active_id` (top-level in `system/config.json`); LUT files and their manifest live under `system/luts/`. The dashboard manages all of this.
+
 ---
 
 ## Current architecture

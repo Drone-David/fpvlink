@@ -4,6 +4,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Native build artifacts (fpvlut3d plugin — built on-device by setup/build-lut-plugin.sh)
+*.so
+
 # Python
 __pycache__/
 *.py[cod]

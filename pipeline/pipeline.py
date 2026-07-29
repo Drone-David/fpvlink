@@ -289,8 +289,8 @@ class FPVPipeline:
                     if any(l.get("id") == self._hdmi_lut_active_id for l in manifest):
                         lut_file = os.path.join(self._system_dir, "luts", f"{self._hdmi_lut_active_id}.cube")
                         if os.path.exists(lut_file):
-                            # The first videoconvert ensures lut3d gets a supported format (like RGB)
-                            lut_str = f"! videoconvert ! lut3d file={lut_file} "
+                            # The first videoconvert ensures fpvlut3d gets a supported format (like RGB)
+                            lut_str = f"! videoconvert ! fpvlut3d file={lut_file} "
                             logger.info(f"Injecting LUT3D element into HDMI branch: {lut_file}")
                         else:
                             logger.error(f"LUT file {lut_file} not found on disk.")

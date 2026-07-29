@@ -245,6 +245,27 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# 4b. Build the fpvlut3d HDMI 3D-LUT element
+# -----------------------------------------------------------------------------
+step "4b/6  Building fpvlut3d (HDMI 3D LUT) GStreamer element"
+
+# The .cube 3D-LUT colour grade for HDMI has no stock element on this target, so
+# FPVLink ships its own tiny native one (capture/fpvlut3d.c). Needs the -base and
+# -video dev headers; a plain gcc build (no meson) then produces the .so that
+# capture/pipeline.py loads via GST_PLUGIN_PATH.
+apt-get install -y --no-install-recommends \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    2>/dev/null || warn "Could not install gst dev headers — fpvlut3d build may fail"
+
+if bash "$(dirname "$0")/build-lut-plugin.sh"; then
+    RESULTS["HDMI 3D LUT (fpvlut3d)"]="PASS"
+else
+    RESULTS["HDMI 3D LUT (fpvlut3d)"]="FAIL"
+    warn "fpvlut3d build failed — the HDMI LUT toggle will safely no-op until fixed."
+fi
+
+# -----------------------------------------------------------------------------
 # 5. Run full validation suite
 # -----------------------------------------------------------------------------
 step "5/6  Running GStreamer plugin validation"

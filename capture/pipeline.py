@@ -12,6 +12,13 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GLib", "2.0")
 from gi.repository import Gst, GLib
 
+# Make the locally-built fpvlut3d element (capture/libgstfpvlut3d.so) discoverable
+# without a system-wide install. Must be set before Gst.init scans the registry.
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+os.environ["GST_PLUGIN_PATH"] = (
+    _PLUGIN_DIR + os.pathsep + os.environ.get("GST_PLUGIN_PATH", "")
+).rstrip(os.pathsep)
+
 Gst.init(sys.argv)
 
 SOCK = "/run/fpvlink/live.sock"
@@ -38,6 +45,52 @@ def load_ndi_config():
     except Exception as e:
         print(f"[Pipeline] NDI config read failed ({e}); NDI disabled", flush=True)
         return False, "FPVLink"
+
+
+def load_lut_config():
+    """Read the HDMI 3D-LUT settings from config.json → (enabled: bool, id: str).
+
+    Same defensive contract as load_ndi_config: any read/parse error returns
+    LUT-disabled so a malformed config can never break the always-on display.
+    """
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        return bool(cfg.get("hdmi_lut_enabled", False)), str(cfg.get("hdmi_lut_active_id") or "")
+    except Exception as e:
+        print(f"[Pipeline] LUT config read failed ({e}); LUT disabled", flush=True)
+        return False, ""
+
+
+def build_lut_segment(enabled, active_id):
+    """Return the GStreamer fragment that colour-grades the display via fpvlut3d,
+    or "" to leave the zero-copy NV12 path untouched.
+
+    Guarded on purpose — this element sits in the always-on display branch, so a
+    missing plugin or a missing .cube file must degrade to a clean (ungraded)
+    picture, never a failed parse_launch (which would black out HDMI):
+      • fpvlut3d not registered  → skip (log error), display stays live
+      • active LUT file absent    → skip (log error), display stays live
+    videoconvert brackets the LUT so it sees packed RGB, then hands NV12 back to
+    the NV12 overlay plane.
+    """
+    if not (enabled and active_id):
+        return ""
+    if Gst.ElementFactory.find("fpvlut3d") is None:
+        print("[Pipeline] LUT enabled but fpvlut3d element not found "
+              "(run setup/build-lut-plugin.sh) — skipping LUT", flush=True)
+        return ""
+    lut_file = os.path.join(os.path.dirname(CONFIG_PATH), "luts", f"{active_id}.cube")
+    if not os.path.exists(lut_file):
+        print(f"[Pipeline] LUT enabled but file missing: {lut_file} — skipping LUT", flush=True)
+        return ""
+    # Escape for the parse-launch string (paths are server-generated: lut_<ts>_<rnd>).
+    safe = lut_file.replace("\\", "\\\\").replace('"', '\\"')
+    print(f"[Pipeline] HDMI 3D LUT ENABLED: {lut_file}", flush=True)
+    return (
+        f'! videoconvert ! fpvlut3d file="{safe}" '
+        f'! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 '
+    )
 
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
 KMS_CONNECTOR_ID = 217
@@ -94,7 +147,7 @@ filesrc location={STANDBY_IMAGE}
   ! sel.
 
 sel. ! tee name=t
-t. ! queue name=dispq max-size-buffers=6 leaky=downstream ! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
+t. ! queue name=dispq max-size-buffers=6 leaky=downstream {{LUT_SEGMENT}}! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
 {{NDI_BRANCH}}
 """
 
@@ -114,6 +167,11 @@ if ndi_enabled:
 else:
     NDI_BRANCH = ""
 PIPELINE_STRING = PIPELINE_STRING.replace("{NDI_BRANCH}", NDI_BRANCH)
+
+# HDMI 3D LUT colour grade (display branch only — see build_lut_segment).
+lut_enabled, lut_active_id = load_lut_config()
+LUT_SEGMENT = build_lut_segment(lut_enabled, lut_active_id)
+PIPELINE_STRING = PIPELINE_STRING.replace("{LUT_SEGMENT}", LUT_SEGMENT)
 
 pipeline = Gst.parse_launch(PIPELINE_STRING)
 live_src = pipeline.get_by_name("live")
@@ -291,23 +349,26 @@ threading.Thread(target=feed_loop, daemon=True).start()
 main_loop = GLib.MainLoop()
 
 def config_watch_loop(initial):
-    """Restart the pipeline when outputs.ndi changes.
+    """Restart the pipeline when a graph-affecting config value changes.
 
     server.js can't restart this service (its sudoers grants only python3, not
-    systemctl), so instead we watch the config and quit the main loop on an NDI
-    change. systemd's Restart=always then respawns us, rebuilding the graph with
-    (or without) the NDI branch. Costs a ~3s standby blip on toggle — acceptable
-    for a deliberate config change.
+    systemctl), so instead we watch the config and quit the main loop on a
+    change to the NDI branch or the HDMI LUT. systemd's Restart=always then
+    respawns us, rebuilding the graph with (or without) those elements. Costs a
+    ~3s standby blip on toggle — acceptable for a deliberate config change.
     """
     while True:
         time.sleep(2.0)
-        if load_ndi_config() != initial:
-            print("[Pipeline] outputs.ndi changed — restarting to apply", flush=True)
+        current = (load_ndi_config(), load_lut_config())
+        if current != initial:
+            print("[Pipeline] config changed (NDI/LUT) — restarting to apply", flush=True)
             main_loop.quit()
             return
 
 threading.Thread(
-    target=config_watch_loop, args=((ndi_enabled, ndi_name),), daemon=True
+    target=config_watch_loop,
+    args=(((ndi_enabled, ndi_name), (lut_enabled, lut_active_id)),),
+    daemon=True,
 ).start()
 
 # First start since boot → warm the display, then exit once so systemd restarts
