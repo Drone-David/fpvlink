@@ -1,10 +1,12 @@
 # FPVLink
 
-Low-latency FPV drone streaming device software for the Orange Pi 5 Plus (RK3588).
+Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
 
-**Target latency:** ~150–200ms glass-to-stream (vs 2–4s on Raspberry Pi 4B / a commercial competitor)  
-**Supported goggles:** DJI Goggles 2 / 3 / Integra / N3 · DJI FPV Goggles V1/V2  
-**Output:** SRT · RTMP · Local recording · RTSP
+**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out, with a web dashboard for live stats. Streaming outputs (SRT/RTMP/RTSP) and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
+
+**Supported goggles:** DJI Goggles 2 / 3 / Integra / N3 · DJI FPV Goggles V1/V2
+**Output today:** HDMI (direct KMS/DRM, hardware decode)
+**Output planned, not yet wired up:** SRT · RTMP · Local recording · RTSP
 
 ---
 
@@ -85,16 +87,19 @@ sudo ./setup/04-service.sh
 ```
 
 ### Validate hardware codec
+
+The live pipeline only **decodes** H.264 (goggles → HDMI); it doesn't encode. `mppvideoenc` isn't used by the current pipeline but is still checked by setup for future streaming outputs — see [Roadmap](#roadmap).
+
 ```bash
-gst-inspect-1.0 mppvideodec   # should print H.265 decoder info
-gst-inspect-1.0 mppvideoenc   # should print H.264 encoder info
+gst-inspect-1.0 mppvideodec   # required — hardware H.264 decode
+gst-inspect-1.0 mppvideoenc   # not currently used, reserved for future SRT/RTMP output
 ```
 
 ---
 
 ## Day 1: Test the GStreamer pipeline
 
-Before connecting goggles, confirm the video pipeline works with a test file:
+`pipeline/test_pipeline.sh` exercises the broader hardware pipeline capability (decode, encode, SRT/RTMP/record branches) independent of goggles input — useful for confirming the Pi's codecs and network output work before wiring anything to real hardware:
 
 ```bash
 # Download a short H.265 test clip
@@ -104,7 +109,9 @@ curl -Lo /tmp/test.h265 https://test-videos.co.uk/vids/jellyfish/mp4/h265/1080/J
 ./pipeline/test_pipeline.sh
 ```
 
-If you see video on HDMI and no errors, the hardware pipeline is working.
+Note: this exercises `pipeline/pipeline.py`, the original streaming-focused design — it is **not** what the `fpvlink-pipeline` service runs day to day (see [Current architecture](#current-architecture)). It's a hardware/codec smoke test, not a test of the live goggles→HDMI path.
+
+To confirm the actual live path works, connect goggles and check the HDMI output directly, or watch stats on the dashboard (below).
 
 ---
 
@@ -136,67 +143,62 @@ It will log everything the goggles send during USB enumeration. You'll see outpu
 
 ---
 
-## Day 2: Configure your stream
+## Day 2: Watch the feed and monitor stats
 
-Open a browser on any device on the same network:
+The pipeline is **always on** — as soon as `fpvlink.service` and `fpvlink-pipeline.service` are running, connecting goggles and powering them on is enough to get video on HDMI. There's no "Start" step for video output.
+
+1. Connect the goggles (see cable notes above) — the display shows a standby card until a live signal arrives, then switches automatically
+2. Open the dashboard on any device on the same network to monitor it:
+
 ```
 http://<OPI-IP>:8080
 ```
 
-From the web UI:
-1. Select your goggles model (or leave on Auto)
-2. Enable SRT or RTMP, enter your stream destination
-3. Set bitrate (8–12 Mbps recommended for FPV)
-4. Click **Start**
+The dashboard shows live fps, received bitrate, resolution, and dropped-frame stats reported by the pipeline every 2 seconds. It does **not** show a video preview — the real feed is the HDMI output, not the browser (see [Current architecture](#current-architecture)).
 
-### Quick SRT test (no account needed)
-```bash
-# On your Mac, receive the SRT stream in VLC or ffplay:
-ffplay srt://<OPI-IP>:9000
-```
-
-### YouTube Live
-- RTMP URL: `rtmp://a.rtmp.youtube.com/live2/`
-- Stream key: from YouTube Studio → Go Live
-
-### OBS/vMix (recommended for events)
-- Add SRT source: `srt://<OPI-IP>:9000`
-- Latency setting: 100ms
+The dashboard's SRT/RTMP fields are present in the UI but aren't connected to the running pipeline yet — see [Roadmap](#roadmap). Ignore them for now.
 
 ---
 
-## Architecture
+## Current architecture
 
 ```
-Goggles 2 ──USB-C (5V cut)──▶ OTG gadget (goggles2.py)
-                                    │
-Goggles V1/V2 ──USB-A──────▶ USB host (v1v2.py)
-                                    │
-                                    ▼
-                         pipeline.py (GStreamer rkmpp)
-                         H.265 decode → H.264 encode
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-                 SRT out        RTMP out       Local record
-              (OBS/vMix)    (YouTube/Twitch)   (eMMC/NVMe)
+Goggles 2 ──USB-C (5V cut)──▶ OTG gadget (capture/goggles2.py) ──┐
+                                                                   │
+Goggles V1/V2/3/Integra/N3 ──USB───▶ USB host (capture/v1v2.py) ──┤
+                                                                   ▼
+                                          UNIX socket /run/fpvlink/live.sock
+                                                                   │
+                                                                   ▼
+                                         capture/pipeline.py (always-on, GStreamer)
+                                         h264parse ! mppvideodec (hardware decode)
+                                                                   │
+                                              ┌────────────────────┴───────────────────┐
+                                              ▼                                        ▼
+                                     input-selector (live)                   input-selector (standby)
+                                     switches in automatically                filesrc standby.jpg
+                                     on the first live frame,                 shown when no signal /
+                                     falls back on signal loss                on startup
+                                              │
+                                              ▼
+                                  kmssink → HDMI (connector-id 217)
+
+capture/pipeline.py also POSTs fps / bitrate / resolution / dropped-frame stats
+every 2s to web/server.js (127.0.0.1:8081/internal/status), which the dashboard
+at :8080 displays over a WebSocket.
 ```
+
+Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. There is currently no encode step and no SRT/RTMP/record branch in this path.
+
+`pipeline/pipeline.py` (H.265 decode → H.264 encode → SRT/RTMP/record branches) is the original design and still present in the repo, but it is **not** what's deployed — the `fpvlink-pipeline.service` unit runs `capture/pipeline.py`, the always-on HDMI-only rewrite.
 
 ---
 
-## Latency tuning
+## Latency
 
-Edit `system/config.json`:
+The live pipeline has no user-tunable latency settings — its low-latency behavior is baked into a fixed, hand-tuned GStreamer graph (byte-stream parsing, `ignore-error` decode, `sync=false` on `kmssink`, shallow leaky display queue). `system/config.json`'s `pipeline.latency_mode` and the SRT `latency_ms` setting apply only to the legacy `pipeline/pipeline.py` streaming path and have no effect on the current HDMI-only pipeline.
 
-```json
-"pipeline": {
-  "latency_mode": "low"      // 100ms SRT buffer, lowest delay
-  "latency_mode": "balanced" // 200ms SRT buffer, more stable
-  "latency_mode": "quality"  // 500ms SRT buffer, best reliability
-}
-```
-
-Lower = less delay but more sensitive to network jitter. For stable Ethernet connections use `"low"`. For WiFi or 5G use `"balanced"`.
+There is no capture-side timestamp from the goggles, so true glass-to-glass latency isn't currently measurable — the dashboard's latency tile intentionally shows `—` rather than a guessed number.
 
 ---
 
@@ -213,15 +215,17 @@ gst-inspect-1.0 mppvideodec
 # If "No such element": re-run setup/03-gstreamer.sh
 ```
 
-### High latency
-- Switch to Ethernet instead of WiFi
-- Lower the SRT latency setting (min 80ms)
-- Check `fpvlink logs`: `journalctl -u fpvlink -f`
+### No video on HDMI
+1. Confirm the pipeline service is alive and not crash-looping: `systemctl status fpvlink-pipeline`, `journalctl -u fpvlink-pipeline -f`
+2. Confirm nothing else holds the DRM connector: `fuser /dev/dri/card0` (only one process may drive `kmssink` at a time)
+3. Check for a live signal reaching the socket: `journalctl -u fpvlink-pipeline -f | grep -i feeder`
 
 ### Service won't start
 ```bash
 systemctl status fpvlink
+systemctl status fpvlink-pipeline
 journalctl -u fpvlink --no-pager -n 50
+journalctl -u fpvlink-pipeline --no-pager -n 50
 ```
 
 ---
@@ -231,10 +235,14 @@ journalctl -u fpvlink --no-pager -n 50
 ```
 fpvlink/
 ├── setup/          One-time setup scripts (run on OPi 5 Plus)
-├── capture/        USB capture: Goggles V1/V2 and Goggles 2
-├── pipeline/       GStreamer hardware video pipeline
-├── web/            Web UI + API server
-├── system/         systemd service + config
+├── capture/        USB capture (goggles2.py, v1v2.py) + capture/pipeline.py,
+│                   the always-on HDMI pipeline actually deployed
+├── pipeline/       Original streaming-focused pipeline (H.265 decode → H.264
+│                   encode → SRT/RTMP/record) — not currently deployed, kept
+│                   as a base for re-enabling streaming outputs
+├── web/            Web UI + API server (stats dashboard, config)
+├── system/         systemd services + config.json (some fields, e.g. SRT/
+│                   RTMP/latency_mode, only apply to the legacy pipeline/)
 └── README.md       This file
 ```
 
@@ -242,13 +250,14 @@ fpvlink/
 
 ## Roadmap
 
+- [ ] Re-enable SRT/RTMP/local-record outputs on the live pipeline (code exists in `pipeline/pipeline.py`, not yet merged into the always-on `capture/pipeline.py`)
+- [ ] Measure real glass-to-glass latency (needs a capture-side timestamp from the goggles)
 - [ ] 5G modem support (Quectel RM500Q via PCIe M.2)
 - [ ] WebRTC output for sub-300ms browser monitoring
 - [ ] Multi-camera: V1/V2 on USB-A + Goggles 2 on USB-C simultaneously
-- [ ] HDMI clean feed output (direct from rkmpp to KMS/DRM)
 - [ ] Telemetry overlay (OSD from goggles data channel)
 - [ ] Mobile companion app
 
 ---
 
-*Built for the FPV community. Hardware designed around Rockchip RK3588 for hardware H.265 decode, H.264 encode, and native USB OTG — the right chip for the job.*
+*Built for the FPV community. Hardware designed around Rockchip RK3588 for hardware H.265/H.264 decode, H.264 encode, and native USB OTG — the right chip for the job.*
