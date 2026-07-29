@@ -49,6 +49,18 @@ KMS_CONNECTOR_ID = 217
 # which can't accept NV12 and dies with an instant EOS (no video).
 KMS_PLANE_ID = 194
 
+# Cold-boot HDMI warm-up. On a genuine cold boot the kernel force-enables the
+# HDMI connector (cmdline video=HDMI-A-1:...@60e, no real EDID handshake) and its
+# CRTC often isn't scanning out yet when our first modeset lands — the screen
+# then stays black indefinitely (nothing retriggers it). A single restart always
+# fixes it: the first run brings the CRTC up, the second run's overlay displays.
+# So on the FIRST start since boot we run briefly, then exit once so systemd
+# (Restart=always) respawns us onto the now-live CRTC. The marker lives in /run
+# (tmpfs, wiped every boot), so this fires exactly once per cold boot and never
+# on a manual `systemctl restart` (which already works on its own).
+WARM_MARKER = "/run/fpvlink/display_warmed"
+DISPLAY_WARM_SECONDS = 4
+
 STALL_TIMEOUT_SEC = 0.5  # Time without live frames before falling back to standby
 last_live_time = 0.0
 
@@ -296,6 +308,23 @@ threading.Thread(
 
 print("[Pipeline] Starting always-on GStreamer pipeline")
 pipeline.set_state(Gst.State.PLAYING)
+
+# First start since boot → warm the display, then exit once so systemd restarts
+# us onto the now-live CRTC (see WARM_MARKER note). If the marker can't be
+# written, skip warming rather than risk an endless warm-restart loop.
+first_boot_start = not os.path.exists(WARM_MARKER)
+if first_boot_start:
+    try:
+        open(WARM_MARKER, "w").close()
+    except OSError as e:
+        print(f"[Pipeline] warm-marker write failed ({e}); skipping warm-restart", flush=True)
+        first_boot_start = False
+if first_boot_start:
+    def _warm_restart():
+        time.sleep(DISPLAY_WARM_SECONDS)
+        print("[Pipeline] First-boot display warm-up done — restarting once to lock HDMI", flush=True)
+        main_loop.quit()
+    threading.Thread(target=_warm_restart, daemon=True).start()
 
 try:
     main_loop.run()
