@@ -18,6 +18,16 @@ SOCK = "/run/fpvlink/live.sock"
 STANDBY_IMAGE = os.path.join(os.path.dirname(__file__), "standby.jpg")
 STATUS_URL = "http://127.0.0.1:8081/internal/status"
 
+# DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
+KMS_CONNECTOR_ID = 217
+# CRTC 89 exposes three usable planes: 57/178 are RGB-only (would force a
+# software NV12→BGRx videoconvert just to display), but plane 194 is a native
+# NV12 video overlay on the same CRTC. Feeding the decoder's NV12 straight to
+# it is zero-copy — it drops 1080p60 display cost from ~a full core to ~16%.
+# Do NOT drop plane-id and let kmssink auto-pick: it selects RGB-only plane 178,
+# which can't accept NV12 and dies with an instant EOS (no video).
+KMS_PLANE_ID = 194
+
 STALL_TIMEOUT_SEC = 0.5  # Time without live frames before falling back to standby
 last_live_time = 0.0
 
@@ -43,11 +53,11 @@ appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,st
 filesrc location={STANDBY_IMAGE}
   ! jpegdec ! imagefreeze is-live=true
   ! videoconvert ! videoscale ! videorate
-  ! video/x-raw,format=NV12,width=1920,height=1080,framerate=60/1
+  ! video/x-raw,format=NV12,width=1920,height=1080,framerate=10/1
   ! sel.
 
 sel. ! tee name=t
-t. ! queue name=dispq max-size-buffers=6 leaky=downstream ! videoconvert ! video/x-raw,format=BGRx ! kmssink connector-id=217 sync=false
+t. ! queue name=dispq max-size-buffers=6 leaky=downstream ! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
 """
 
 pipeline = Gst.parse_launch(PIPELINE_STRING)
