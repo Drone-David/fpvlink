@@ -307,9 +307,11 @@ internalApp.post('/internal/status', (req, res) => {
   if (typeof body.frame_gap_p95_ms === 'number')  state.frame_gap_p95_ms  = body.frame_gap_p95_ms;
   res.json({ok:true});
 });
-internalApp.listen(8081, '127.0.0.1', () => {
-  logger.info('Internal API listening on 127.0.0.1:8081');
-});
+if (require.main === module) {
+  internalApp.listen(8081, '127.0.0.1', () => {
+    logger.info('Internal API listening on 127.0.0.1:8081');
+  });
+}
 
 function handlePipelineStatusChange(newStatus) {
   // Heartbeat watchdog
@@ -516,13 +518,15 @@ async function disableCapture() {
 }
 
 // Initial Boot Setup for Gadget
-execFile('sudo', ['python3', path.join(ROOT_DIR, 'capture', 'goggles2.py'), '--setup', '--if-absent'], (error, stdout, stderr) => {
-  if (error) {
-    logger.error(`Boot gadget setup failed: ${error.message}`);
-  } else {
-    logger.info('Boot gadget setup checked/completed.');
-  }
-});
+if (require.main === module) {
+  execFile('sudo', ['python3', path.join(ROOT_DIR, 'capture', 'goggles2.py'), '--setup', '--if-absent'], (error, stdout, stderr) => {
+    if (error) {
+      logger.error(`Boot gadget setup failed: ${error.message}`);
+    } else {
+      logger.info('Boot gadget setup checked/completed.');
+    }
+  });
+}
 
 function spawnCapture(cfg) {
   const { script, args } = captureScript(cfg);
@@ -895,7 +899,7 @@ setInterval(async () => {
     state.soc_temp = null;
     state.thermal_state = 'NORMAL';
   }
-}, 2000);
+}, 2000).unref();
 
 // Storage Polling (every 15s)
 setInterval(() => {
@@ -954,7 +958,7 @@ setInterval(() => {
       }
     }
   });
-}, 15000);
+}, 15000).unref();
 
 // Push real-time stats every 500 ms
 setInterval(() => {
@@ -1004,7 +1008,7 @@ setInterval(() => {
       }
     }
   }
-}, 500);
+}, 500).unref();
 
 // ─────────────────────────────────────────────
 // UDP Preview Server
@@ -1021,7 +1025,9 @@ udpServer.on('message', (msg) => {
 udpServer.on('error', (err) => {
   logger.error(`UDP server error: ${err.message}`);
 });
-udpServer.bind(9002, '127.0.0.1');
+if (require.main === module) {
+  udpServer.bind(9002, '127.0.0.1');
+}
 
 // ─────────────────────────────────────────────
 // Graceful shutdown
@@ -1067,5 +1073,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  state
+  state,
+  validateConfig
 };
