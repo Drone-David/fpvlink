@@ -158,13 +158,27 @@ latency_ms = 0.0  # EMA of internal ingest→display delay        → latency (s
 # process (its own systemd unit), fed a copy of the H.264 bytes over the
 # stream-relay socket below — a stuck network sink can only crash that
 # process, never this one. See relay_push()/relay_server_loop().
-def build_pipeline_string(lut_segment, ndi_branch):
+#
+# The preview branch (previewq → jpegenc → udpsink :9002) is a low-rate
+# 640x360@15fps confidence feed for the dashboard, so an operator can confirm
+# their own capture chain is alive without a separate hardware monitor. It taps
+# the display tee exactly like the NDI branch (a pixel-reading consumer the
+# display already tolerates without losing its NV12 zero-copy path) and, unlike
+# the SRT/RTMP sinks, ends in udpsink — connectionless and non-blocking, so it
+# can never stall the tee the way a blocking network sink would. Verified with
+# an isolated tee test: even with the preview branch throttled ~10x below
+# realtime, its leaky queue kept the display branch at full rate. It previews
+# whatever is on HDMI (live feed, or the standby card during signal loss — which
+# doubles as a "no signal" indicator), so it's unconditional: no toggle, hence
+# no restart blip to turn it on/off mid-event.
+def build_pipeline_string(lut_segment, ndi_branch, preview_branch):
     """Assemble the full pipeline description.
 
-    Called once with the real, config-derived optional segments. If that
-    fails to parse, called again with both blank as a last-resort fallback
-    (see the parse_launch try/except below) — a single bad LUT/NDI setting
-    must never leave HDMI dark.
+    Called once with the real optional segments. If that fails to parse, called
+    again with all three blank as a last-resort fallback (see the parse_launch
+    try/except below) — a single bad LUT/NDI/preview segment must never leave
+    HDMI dark. (Preview is normally always-on, but it's still passed as a
+    parameter precisely so the fallback can strip it if it's ever the culprit.)
     """
     return f"""
 appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream
@@ -182,6 +196,7 @@ filesrc location={STANDBY_IMAGE}
 sel. ! tee name=t
 t. ! queue name=dispq max-size-buffers=6 leaky=downstream {lut_segment}! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
 {ndi_branch}
+{preview_branch}
 """
 
 # NDI output taps the same tee as the display, so the NDI source stays alive
@@ -204,20 +219,28 @@ else:
 lut_enabled, lut_active_id = load_lut_config()
 LUT_SEGMENT = build_lut_segment(lut_enabled, lut_active_id)
 
-PIPELINE_STRING = build_pipeline_string(LUT_SEGMENT, NDI_BRANCH)
+# Always-on low-rate confidence preview off the display tee (see the note above
+# build_pipeline_string for why this is safe and unconditional).
+PREVIEW_BRANCH = (
+    "t. ! queue name=previewq max-size-buffers=2 leaky=downstream "
+    "! videoscale ! videorate ! videoconvert "
+    "! video/x-raw,format=I420,width=640,height=360,framerate=15/1 "
+    "! jpegenc quality=40 ! udpsink host=127.0.0.1 port=9002 sync=false"
+)
+
+PIPELINE_STRING = build_pipeline_string(LUT_SEGMENT, NDI_BRANCH, PREVIEW_BRANCH)
 
 try:
     pipeline = Gst.parse_launch(PIPELINE_STRING)
 except GLib.Error as e:
-    # Should be unreachable — build_lut_segment already validates its inputs —
-    # but this is the always-on display pipeline, so treat any parse failure
-    # (including ones we didn't anticipate) as recoverable, not fatal: drop
-    # every optional output and keep HDMI alive rather than crash-loop on a
-    # config value that will still be bad on the next systemd restart.
+    # Should be unreachable — the segments are validated/known-good — but this
+    # is the always-on display pipeline, so treat any parse failure (including
+    # ones we didn't anticipate) as recoverable, not fatal: drop every optional
+    # branch and keep HDMI alive rather than crash-loop on a bad segment.
     print(f"[Pipeline] FATAL: pipeline failed to parse with configured outputs "
-          f"({e}) — retrying with LUT/NDI disabled so HDMI stays up. Check "
-          f"those settings in the dashboard.", flush=True)
-    PIPELINE_STRING = build_pipeline_string("", "")
+          f"({e}) — retrying with LUT/NDI/preview disabled so HDMI stays up. "
+          f"Check those settings in the dashboard.", flush=True)
+    PIPELINE_STRING = build_pipeline_string("", "", "")
     pipeline = Gst.parse_launch(PIPELINE_STRING)
 
 live_src = pipeline.get_by_name("live")

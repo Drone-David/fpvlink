@@ -969,9 +969,12 @@ setInterval(() => {
 // ─────────────────────────────────────────────
 const udpServer = dgram.createSocket('udp4');
 udpServer.on('message', (msg) => {
-  if (state.streaming) {
-    broadcast({ type: 'preview', frame: msg.toString('base64') });
-  }
+  // The pipeline's preview branch only emits JPEG frames when it's producing
+  // video at all, so a received packet is itself the "signal present" proof —
+  // no gating needed. (The old `state.streaming` guard referenced a flag the
+  // always-on pipeline never sets, so this never fired.) Frames reflect
+  // whatever is on HDMI, including the standby card during signal loss.
+  broadcast({ type: 'preview', frame: msg.toString('base64') });
 });
 udpServer.on('error', (err) => {
   logger.error(`UDP server error: ${err.message}`);

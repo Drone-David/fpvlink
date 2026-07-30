@@ -10,6 +10,49 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="stylesheet" href="styles.css" />
+  <style>
+    .preview-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .preview-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: none;
+      transition: opacity 0.3s ease;
+    }
+    .preview-img.has-frame { display: block; }
+    .preview-img.stale { opacity: 0.45; filter: grayscale(0.6); }
+    .preview-placeholder {
+      position: absolute;
+      color: #71717a;
+      font-size: 0.85rem;
+      letter-spacing: 0.02em;
+    }
+    .preview-badge {
+      margin-left: auto;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      color: #a1a1aa;
+    }
+    .preview-badge.ok {
+      background: rgba(0, 212, 255, 0.15);
+      color: #00d4ff;
+    }
+  </style>
 </head>
 <body>
 
@@ -161,6 +204,27 @@
       <span class="stat-unit">GB</span>
     </div>
 
+  </div>
+
+  <!-- ══════════════════════════════════════
+       LIVE PREVIEW CARD
+  ══════════════════════════════════════ -->
+  <div class="card" role="region" aria-labelledby="previewTitle">
+    <h2 class="card-title" id="previewTitle">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <rect x="1" y="2.5" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+        <circle cx="7" cy="7" r="2.2" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+      Live Preview
+      <span id="previewBadge" class="preview-badge" aria-live="polite">waiting…</span>
+    </h2>
+    <div class="preview-wrap">
+      <img id="previewImg" class="preview-img" alt="Live confidence preview of the HDMI output" />
+      <div id="previewPlaceholder" class="preview-placeholder">No preview signal yet</div>
+    </div>
+    <p class="stream-help-text" style="margin-top:0.75rem;font-size:0.8rem;color:#a1a1aa;line-height:1.4;">
+      Low-latency confidence feed of the HDMI output — confirm your capture chain is live without a separate monitor. Shows the standby card when there's no signal.
+    </p>
   </div>
 
   <!-- ══════════════════════════════════════
@@ -416,6 +480,9 @@ const el = {
   streamBtn:         $('streamBtn'),
   streamBtnLabel:    $('streamBtnLabel'),
   streamStatusText:  $('streamStatusText'),
+  previewImg:         $('previewImg'),
+  previewPlaceholder: $('previewPlaceholder'),
+  previewBadge:       $('previewBadge'),
   offlineBanner:     $('offlineBanner'),
   criticalBanner:    $('criticalBanner'),
   criticalBannerText:$('criticalBannerText'),
@@ -459,6 +526,7 @@ function connectWS() {
     if (msg.type === 'stats')     handleStats(msg);
     if (msg.type === 'log')       appendLog(msg.line);
     if (msg.type === 'log_batch') msg.lines.forEach((l) => appendLog(l));
+    if (msg.type === 'preview')   handlePreview(msg);
   });
 
   ws.addEventListener('close', () => {
@@ -478,6 +546,38 @@ function showOfflineBanner() {
 function hideOfflineBanner() {
   el.offlineBanner.classList.remove('visible');
 }
+
+// ─────────────────────────────────────────────
+// Live preview (JPEG-over-WS confidence feed)
+// ─────────────────────────────────────────────
+let lastPreviewAt = 0;
+let previewStaleTimer = null;
+
+function handlePreview(msg) {
+  if (!msg.frame || !el.previewImg) return;
+  el.previewImg.src = `data:image/jpeg;base64,${msg.frame}`;
+  el.previewImg.classList.add('has-frame');
+  if (el.previewPlaceholder) el.previewPlaceholder.style.display = 'none';
+  lastPreviewAt = Date.now();
+  el.previewBadge.textContent = 'live';
+  el.previewBadge.classList.add('ok');
+}
+
+// Watchdog: if frames stop arriving, the preview is frozen on its last image —
+// flag it rather than let a stale picture imply everything's fine (the exact
+// false-confidence trap this whole feature exists to avoid).
+setInterval(() => {
+  if (!el.previewBadge) return;
+  if (lastPreviewAt === 0) return; // never received a frame yet
+  const ageMs = Date.now() - lastPreviewAt;
+  if (ageMs > 2000) {
+    el.previewBadge.textContent = 'stale';
+    el.previewBadge.classList.remove('ok');
+    el.previewImg.classList.add('stale');
+  } else {
+    el.previewImg.classList.remove('stale');
+  }
+}, 1000);
 
 // ─────────────────────────────────────────────
 // Stats update

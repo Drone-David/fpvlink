@@ -2,11 +2,11 @@
 
 Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
 
-**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional NDI network output, HDMI 3D LUT, and SRT/RTMP passthrough), with a web dashboard for live stats. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
+**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional NDI network output, HDMI 3D LUT, and SRT/RTMP passthrough), with a web dashboard for live stats, a low-latency confidence preview, and an internal-latency readout. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
 
 **Supported goggles:** DJI Goggles 2 / 3 / Integra / N3 · DJI FPV Goggles V1/V2
 **Output today:** HDMI (direct KMS/DRM, hardware decode)
-**Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor) · HDMI 3D LUT · SRT · RTMP
+**Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor) · HDMI 3D LUT · SRT · RTMP · dashboard live preview
 **Output planned, not yet wired up:** Local recording · RTSP
 
 ---
@@ -155,7 +155,7 @@ The pipeline is **always on** — as soon as `fpvlink.service` and `fpvlink-pipe
 http://<OPI-IP>:8080
 ```
 
-The dashboard shows live fps, received bitrate, resolution, and dropped-frame stats reported by the pipeline every 2 seconds. It does **not** show a video preview — the real feed is the HDMI output, not the browser (see [Current architecture](#current-architecture)).
+The dashboard shows live fps, bitrate, resolution, dropped-frame, and internal-latency stats reported by the pipeline every 2 seconds, plus a low-rate confidence preview (see [Live preview](#live-preview-working) below) — the real feed for actual use is still the HDMI output, not the browser; the dashboard preview is for confirming the chain is alive, not for monitoring picture quality.
 
 The dashboard's **NDI**, **HDMI 3D LUT**, and **SRT/RTMP** controls are all wired up and work (see below).
 
@@ -186,6 +186,17 @@ Push the goggles' own H.264 stream out over SRT or RTMP — no re-encode, so it 
 - Changing SRT/RTMP settings restarts only `fpvlink-stream` (not the display pipeline) to apply.
 - Config: `outputs.srt` (`enabled`, `url`, `latency_ms`, `wait_for_connection`) and `outputs.rtmp` (`enabled`, `url`, `stream_key`) in `system/config.json`; the dashboard manages both.
 
+### Live preview (working)
+
+The dashboard shows a low-rate (640×360, 15fps JPEG) confidence feed of whatever is on the HDMI output, so an operator can confirm their capture chain is alive from a phone or laptop without a separate hardware monitor. It shows the live feed when there's signal and the standby card when there isn't (so a frozen or "standby" preview is itself the "no signal" indicator), and the dashboard flags the preview **stale** if frames stop arriving entirely.
+
+- Taps the display `tee` exactly like the NDI branch and ends in a non-blocking `udpsink` (127.0.0.1:9002) → `server.js` rebroadcasts frames to dashboards over WebSocket. Unlike the SRT/RTMP sinks, `udpsink` is connectionless and can't stall the tee — verified in isolation that even a preview branch throttled ~10× below realtime leaves the display at full rate.
+- Always-on and unconditional (no toggle): a toggle would cost a ~3s HDMI blip to apply, and the whole point is a passive readout that's instantly there, never something you'd black out the feed to enable mid-event. Costs ~15% of one core for the JPEG encode.
+
+### Internal latency readout (working)
+
+The dashboard's latency tile reports FPVLink's **own** ingest→display delay (capture socket → decode → display queue), measured from the appsrc buffer PTS (`do-timestamp`) versus the running-time at the display queue's output. This is the box's contribution to glass-to-glass latency — not the full drone-camera-to-screen figure (no capture-side timestamp exists from the goggles for that) — which is what lets you tell whether delay originates in the box or in a downstream link. Reads `—` when not live.
+
 ---
 
 ## Current architecture
@@ -209,11 +220,12 @@ Goggles V1/V2/3/Integra/N3 ──USB───▶ USB host (capture/v1v2.py) ─�
                                      falls back on signal loss                on startup
                                               │
                                               ▼
-                                         tee ─┬─────────────────────────────┐
-                                              ▼                             ▼
-                    [fpvlut3d] ! kmssink → HDMI (connector 217,   ndisink → NDI on LAN
-                    plane 194: native-NV12; optional .cube        (optional, outputs.ndi;
-                    LUT grade, hdmi_lut_enabled)                  NV12 direct, no convert)
+                                         tee ─┬──────────────────┬──────────────────┐
+                                              ▼                  ▼                  ▼
+                    [fpvlut3d] ! kmssink → HDMI      ndisink → NDI on LAN    jpegenc → udpsink :9002
+                    (connector 217, plane 194:       (optional, outputs.ndi; (640x360 15fps preview;
+                    native-NV12; optional .cube      NV12 direct, no         server.js relays to
+                    LUT grade, hdmi_lut_enabled)     convert)                dashboard over WebSocket)
 
   Also, a best-effort byte copy (never blocks the above) ──▶ UNIX socket
                                           /run/fpvlink/stream_relay.sock
@@ -232,7 +244,7 @@ every 2s to web/server.js (127.0.0.1:8081/internal/status), which the dashboard
 at :8080 displays over a WebSocket.
 ```
 
-Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. The HDMI display uses DRM **plane 194** (a native-NV12 overlay on connector 217's CRTC), so decoded NV12 reaches the panel with no software color conversion unless the LUT is on — this is what keeps 1080p60 CPU low. The only encode is the optional NDI (SpeedHQ) branch when `outputs.ndi.enabled` is set; SRT/RTMP are mux-only passthrough (no encode) and run in a separate process, not this graph.
+Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264parse ! mppvideodec`. The HDMI display uses DRM **plane 194** (a native-NV12 overlay on connector 217's CRTC), so decoded NV12 reaches the panel with no software color conversion unless the LUT is on — this is what keeps 1080p60 CPU low. Encoding in this graph is limited to the low-cost preview JPEG and, when enabled, the NDI (SpeedHQ) branch; SRT/RTMP are mux-only passthrough (no encode) and run in a separate process, not this graph.
 
 `pipeline/pipeline.py` (H.265 decode → H.264 encode → SRT/RTMP/record branches) is the original design and still present in the repo, but it is **not** what's deployed — the `fpvlink-pipeline.service` unit runs `capture/pipeline.py`, the always-on HDMI-only rewrite. SRT/RTMP passthrough on the live path is a from-scratch reimplementation in `capture/stream_output.py`, not a port of that legacy code.
 
@@ -242,7 +254,7 @@ Goggles stream **H.264** on the wire (not H.265) — the decode branch is `h264p
 
 The HDMI display pipeline has no user-tunable latency settings — its low-latency behavior is baked into a fixed, hand-tuned GStreamer graph (byte-stream parsing, `ignore-error` decode, `sync=false` on `kmssink`, shallow leaky display queue). `system/config.json`'s `pipeline.latency_mode` applies only to the legacy `pipeline/pipeline.py` streaming path and has no effect on the current HDMI-only pipeline. `outputs.srt.latency_ms`, however, is real and live: it's passed straight to `srtsink` in `capture/stream_output.py`.
 
-There is no capture-side timestamp from the goggles, so true glass-to-glass latency isn't currently measurable — the dashboard's latency tile intentionally shows `—` rather than a guessed number.
+There is no capture-side timestamp from the goggles, so true end-to-end glass-to-glass latency isn't measurable — but the dashboard's latency tile does show a real number: FPVLink's own ingest→display delay (see [Internal latency readout](#internal-latency-readout-working) above), which is enough to tell whether delay is coming from the box or from something downstream (a wireless hop, a receiver, etc.). It reads `—` when not live.
 
 ---
 
@@ -263,6 +275,9 @@ gst-inspect-1.0 mppvideodec
 1. Confirm the pipeline service is alive and not crash-looping: `systemctl status fpvlink-pipeline`, `journalctl -u fpvlink-pipeline -f`
 2. Confirm nothing else holds the DRM connector: `fuser /dev/dri/card0` (only one process may drive `kmssink` at a time)
 3. Check for a live signal reaching the socket: `journalctl -u fpvlink-pipeline -f | grep -i feeder`
+
+### HDMI frozen on the last frame instead of showing the standby card
+Fixed, but documented here because it was a real, previously-invisible failure mode worth knowing about if you're running an older build. The fallback that returns the display to the standby card on signal loss used to be driven by a buffer probe on the standby branch — on the (wrong) assumption that `input-selector` keeps pulling the inactive branch. It doesn't: the inactive branch's buffer flow stops completely the instant the other pad goes active, so that probe could never fire at the one moment it mattered (live just died), and the pipeline could switch *to* live but never back — on real signal loss, HDMI would freeze on the last live frame rather than falling back. It only looked fine in testing because the pipeline always *starts* on standby. Now driven by a `GLib.timeout_add` on the main loop (`standby_watchdog_tick`, checked every 200ms), independent of any branch's buffer flow — verified with a live→standby→live→standby cycle under realtime feed conditions.
 
 ### Service won't start
 ```bash
