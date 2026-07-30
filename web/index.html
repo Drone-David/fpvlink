@@ -493,9 +493,19 @@ function handleStats(s) {
   el.statBitrate.textContent = mbps;
   el.statBitrate.classList.toggle('live', s.streaming && s.bitrate_kbps > 0);
 
-  // Latency — not measurable end-to-end (no capture-side timestamp from the goggles)
-  el.statLatency.textContent = '—';
-  el.statLatency.classList.remove('live');
+  // Latency — FPVLink's own internal ingest→display delay (measured in
+  // capture/pipeline.py). This is the portion of glass-to-glass latency the box
+  // is responsible for, not the full drone-camera-to-screen number (no
+  // capture-side timestamp from the goggles exists for that). The pipeline
+  // reports 0 when not live, so 0/absent → show a neutral dash.
+  const latency = Number(s.latency_ms);
+  if (latency > 0) {
+    el.statLatency.textContent = latency.toFixed(0);
+    el.statLatency.classList.add('live');
+  } else {
+    el.statLatency.textContent = '—';
+    el.statLatency.classList.remove('live');
+  }
 
   // Resolution
   el.statResolution.textContent = s.resolution || '—';

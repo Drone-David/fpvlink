@@ -138,6 +138,7 @@ frame_count = 0   # decoded live frames (live-pad probe)      → fps
 bytes_total = 0   # total H.264 bytes received from the feeder → bitrate + received
 q_in = 0          # buffers entering the display queue
 q_out = 0         # buffers leaving the display queue          → (in-out-level)=dropped
+latency_ms = 0.0  # EMA of internal ingest→display delay        → latency (see _dispq_out_probe)
 
 # Always-on pipeline using input-selector for instant switching.
 # - sync-streams=false on input-selector ensures the inactive branch keeps running and dropping buffers,
@@ -263,12 +264,15 @@ def report_status_loop():
             last_t, last_frames, last_bytes = now, frame_count, bytes_total
             last_q_in, last_q_out = q_in, q_out
 
+            latency = round(latency_ms, 1)
+
             # No live signal → report a clean idle state rather than stale numbers.
             if status != "live":
                 fps = 0.0
                 bitrate_kbps = 0
                 dropped = 0
                 resolution = "—"
+                latency = 0.0
 
             payload = {
                 "status": status,
@@ -277,6 +281,7 @@ def report_status_loop():
                 "resolution": resolution,
                 "bytes_received": bytes_total,
                 "dropped_frames": dropped,
+                "latency_ms": latency,
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(STATUS_URL, data=data, headers={"Content-Type": "application/json"})
@@ -301,24 +306,33 @@ def on_live_probe(pad, info):
         sel.set_property("active-pad", pad)
     return Gst.PadProbeReturn.OK
 
-def on_standby_probe(pad, info):
-    """
-    Pad probe on the standby card.
-    Because sync-streams=false, input-selector consumes buffers from this pad even when inactive,
-    meaning this probe fires 60 times a second on the standby branch's streaming thread!
-    We use this to implement our stall watchdog cleanly without GLib timers.
-    """
-    global last_live_time
-    
-    if time.time() - last_live_time > STALL_TIMEOUT_SEC:
-        current = sel.get_property("active-pad")
-        if current != pad:
-            sel.set_property("active-pad", pad)
-    return Gst.PadProbeReturn.OK
+STANDBY_CHECK_MS = 200  # how often the fallback watchdog checks for signal loss
 
-# Attach probes
+def standby_watchdog_tick():
+    """Fall back to the standby card when the live signal goes stale.
+
+    Runs on the GLib main loop, NOT off a pad probe. The obvious-looking
+    approach — a buffer probe on the standby pad that fires while it's the
+    inactive input — does NOT work: input-selector stops pulling the inactive
+    branch the instant the live pad goes active (verified — the standby pad's
+    buffers freeze completely while live is selected), so a standby-pad probe
+    can never fire at the one moment it's needed (live just died). The result
+    was that the pipeline could switch TO live but never back, freezing HDMI on
+    the last live frame on signal loss. A timer is independent of any branch's
+    buffer flow, so it always fires — reselecting the standby pad both shows the
+    card and lets its (previously stalled) branch resume producing.
+    """
+    if time.time() - last_live_time > STALL_TIMEOUT_SEC:
+        if sel.get_property("active-pad") != standby_pad:
+            sel.set_property("active-pad", standby_pad)
+            print("[Pipeline] Live signal lost — switched to standby card", flush=True)
+    return True  # keep the timer registered
+
+# Live pad probe flips TO live and tracks freshness; the fallback back to
+# standby is handled by standby_watchdog_tick on the main loop (see there for
+# why a standby-pad probe can't do it).
 live_pad.add_probe(Gst.PadProbeType.BUFFER, on_live_probe)
-standby_pad.add_probe(Gst.PadProbeType.BUFFER, on_standby_probe)
+GLib.timeout_add(STANDBY_CHECK_MS, standby_watchdog_tick)
 
 # Display-queue drop accounting: count buffers in vs out; the leaky queue silently
 # drops the oldest when full, so dropped ≈ (in - out - current level).
@@ -333,9 +347,30 @@ def _dispq_in_probe(pad, info):
     return Gst.PadProbeReturn.OK
 
 def _dispq_out_probe(pad, info):
-    global q_out
+    # Fires on every buffer leaving the display queue toward kmssink — the last
+    # point we control before the frame hits the panel. Besides drop accounting,
+    # we use it to measure FPVLink's own internal latency: appsrc has
+    # do-timestamp=true, so each buffer's PTS is the pipeline running-time at the
+    # moment feed_loop() pushed it in. Comparing that to the running-time NOW,
+    # here, gives ingest→display delay (USB-in → decode → queue → about-to-scan-out)
+    # — i.e. the part of glass-to-glass latency this box is responsible for, which
+    # is all we can measure (there's no capture-side timestamp from the goggles for
+    # a true end-to-end number). Reported to the dashboard's latency tile.
+    global q_out, latency_ms
     if time.time() - last_live_time < STALL_TIMEOUT_SEC:
         q_out += 1
+        buf = info.get_buffer()
+        if buf is not None and buf.pts != Gst.CLOCK_TIME_NONE:
+            clock = pipeline.get_clock()
+            if clock is not None:
+                now_rt = clock.get_time() - pipeline.get_base_time()
+                sample_ms = (now_rt - buf.pts) / 1e6
+                # Ignore nonsense samples (clock discontinuity, PTS in a foreign
+                # domain, warm-restart transients) so one bad frame can't spike
+                # the readout; a real internal delay is well under this bound.
+                if 0.0 <= sample_ms < 2000.0:
+                    # EMA smooths per-frame jitter into a steady, readable number.
+                    latency_ms = 0.8 * latency_ms + 0.2 * sample_ms
     return Gst.PadProbeReturn.OK
 
 dispq.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _dispq_in_probe)

@@ -288,6 +288,7 @@ internalApp.post('/internal/status', (req, res) => {
   if (typeof body.resolution === 'string')     state.resolution     = body.resolution;
   if (typeof body.bytes_received === 'number') state.bytes_received = body.bytes_received;
   if (typeof body.dropped_frames === 'number') state.dropped_frames = body.dropped_frames;
+  if (typeof body.latency_ms === 'number')     state.latency_ms     = body.latency_ms;
   res.json({ok:true});
 });
 internalApp.listen(8081, '127.0.0.1', () => {
