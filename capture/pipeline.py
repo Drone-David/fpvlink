@@ -11,7 +11,8 @@ import gi
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GLib", "2.0")
-from gi.repository import Gst, GLib
+gi.require_version("GstVideo", "1.0")
+from gi.repository import Gst, GLib, GstVideo
 
 # Under systemd our stdout is a journald socket, not a tty — so Python
 # BLOCK-buffers it (~8KB) and diagnostics can sit unflushed indefinitely. That
@@ -97,9 +98,12 @@ def build_lut_segment(enabled, active_id):
     # Escape for the parse-launch string (paths are server-generated: lut_<ts>_<rnd>).
     safe = lut_file.replace("\\", "\\\\").replace('"', '\\"')
     print(f"[Pipeline] HDMI 3D LUT ENABLED: {lut_file}", flush=True)
+    # No fixed width/height here (was a hardcoded 1920x1080 assertion — same bug
+    # as the main decode caps: any non-16:9 source would fail negotiation right
+    # here and crash the pipeline, bypassing the render-rectangle fix entirely).
     return (
         f'! videoconvert ! fpvlut3d file="{safe}" '
-        f'! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 '
+        f'! videoconvert ! video/x-raw,format=NV12 '
     )
 
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
@@ -184,7 +188,7 @@ def build_pipeline_string(lut_segment, ndi_branch, preview_branch):
 appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream
   ! h264parse
   ! mppvideodec ignore-error=true
-  ! video/x-raw,format=NV12,width=1920,height=1080
+  ! video/x-raw,format=NV12
   ! input-selector name=sel sync-streams=false
 
 filesrc location={STANDBY_IMAGE}
@@ -194,7 +198,7 @@ filesrc location={STANDBY_IMAGE}
   ! sel.
 
 sel. ! tee name=t
-t. ! queue name=dispq max-size-buffers=6 leaky=downstream {lut_segment}! kmssink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} sync=false
+t. ! queue name=dispq max-size-buffers=6 leaky=downstream {lut_segment}! kmssink name=hdmisink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} can-scale=true sync=false
 {ndi_branch}
 {preview_branch}
 """
@@ -251,6 +255,56 @@ standby_pad = sel.get_static_pad("sink_1")
 
 # Default to standby card
 sel.set_property("active-pad", standby_pad)
+
+# Aspect-ratio-preserving display fit. Goggles/cameras that aren't exactly
+# 1920x1080 (e.g. a 4:3 source) used to fail caps negotiation right after the
+# decoder — which was a HARD capsfilter asserting width=1920,height=1080 rather
+# than scaling to it — and take down the whole always-on pipeline (bus ERROR ->
+# main_loop.quit() -> systemd restart -> repeat for as long as that source kept
+# streaming). Fixed by letting the decoder output its native resolution, and
+# instead positioning kmssink's DRM plane (hardware VOP2 scaler, zero extra
+# CPU) into a centered, aspect-correct rectangle within the 1920x1080 canvas —
+# see [[fpvlink-video-path-facts]] for the plane-194 zero-copy details this
+# builds on. One probe handles both live (any aspect) and standby (fixed
+# 1920x1080, which computes to the trivial full-frame rectangle).
+hdmisink = pipeline.get_by_name("hdmisink")
+
+def _apply_aspect_fit(width, height):
+    try:
+        if not width or not height:
+            return
+        scale = min(1920.0 / width, 1080.0 / height)
+        render_w = max(1, round(width * scale))
+        render_h = max(1, round(height * scale))
+        x = (1920 - render_w) // 2
+        y = (1080 - render_h) // 2
+        GstVideo.VideoOverlay.set_render_rectangle(hdmisink, x, y, render_w, render_h)
+    except Exception as e:
+        # Must never be able to crash the always-on pipeline over a framing
+        # update — worst case we keep the previous (or default full-frame)
+        # rectangle rather than the correct one.
+        print(f"[Pipeline] render-rectangle update failed ({e}); "
+              f"keeping previous framing", flush=True)
+
+def _hdmisink_caps_probe(pad, info):
+    event = info.get_event()
+    if event.type == Gst.EventType.CAPS:
+        caps = event.parse_caps()
+        if caps and caps.get_size() > 0:
+            st = caps.get_structure(0)
+            ok_w, w = st.get_int("width")
+            ok_h, h = st.get_int("height")
+            if ok_w and ok_h:
+                _apply_aspect_fit(w, h)
+    return Gst.PadProbeReturn.OK
+
+if hdmisink is not None:
+    hdmisink.get_static_pad("sink").add_probe(
+        Gst.PadProbeType.EVENT_DOWNSTREAM, _hdmisink_caps_probe
+    )
+else:
+    print("[Pipeline] hdmisink element not found — aspect-ratio fitting "
+          "disabled for this run", flush=True)
 
 def report_status_loop():
     """Heartbeat pipeline status + live stats to the web server every 2 seconds."""
