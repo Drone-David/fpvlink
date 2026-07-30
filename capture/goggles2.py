@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import logging
 import os
 import struct
@@ -552,8 +553,31 @@ class Goggles2Capture:
         self._ep_out_path: Optional[Path] = None  # set after FFS ready
         self._udc_name:    Optional[str]  = None  # set during setup
         self._streaming    = False
+        self._usb_link     = False   # gadget enumerated (FUNCTIONFS_ENABLE)
+        self._usb_data     = False   # any bytes seen on the bulk-OUT endpoint
+        self._usb_stream   = False   # valid H.264 confirmed on port 0x574A
         import threading
         self._aoa_rebind_requested = threading.Event()
+
+    # ------------------------------------------------------------------
+    # USB link-state reporting (dashboard status dots)
+    # ------------------------------------------------------------------
+
+    def _emit_usb_state(self) -> None:
+        """Emit the current USB connection stage to stderr for the dashboard.
+
+        Parsed by web/server.js's capture stderr handler (same [TAG] JSON
+        convention as the pipeline's [STATS] line) into three status-bar
+        dots: LINK (gadget enumerated), DATA (any bytes arriving), STREAM
+        (valid H.264 confirmed on port 0x574A). Each resets to false when the
+        stage above it goes down, so a stuck connection shows exactly where.
+        """
+        state = json.dumps({
+            "link":   self._usb_link,
+            "data":   self._usb_data,
+            "stream": self._usb_stream,
+        })
+        print(f"[USBSTATE] {state}", file=sys.stderr, flush=True)
 
     # ------------------------------------------------------------------
     # Pre-flight checks
@@ -734,9 +758,15 @@ class Goggles2Capture:
                     elif ev_type == FUNCTIONFS_ENABLE:
                         log.info("ep0: ENABLE — host configured gadget, ready to stream.")
                         self._enabled_event.set()
+                        self._usb_link = True
+                        self._emit_usb_state()
                     elif ev_type == FUNCTIONFS_DISABLE:
                         log.info("ep0: DISABLE — host disconnected.")
                         self._enabled_event.clear()
+                        self._usb_link = False
+                        self._usb_data = False
+                        self._usb_stream = False
+                        self._emit_usb_state()
                     elif ev_type == FUNCTIONFS_UNBIND:
                         log.info("ep0: UNBIND — gadget unbound from UDC.")
                         continue
@@ -855,6 +885,8 @@ class Goggles2Capture:
                 log.info("First video payload (%s): %s", source_desc, video[:8].hex())
                 if not video.startswith(b'\x00\x00\x00\x01') and not video.startswith(b'\x00\x00\x01'):
                     log.warning("WARNING: First video payload does NOT start with an H.264 Annex B start code!")
+                self._usb_stream = True
+                self._emit_usb_state()
             total_bytes += len(video)
             sink(video)
 
@@ -862,6 +894,11 @@ class Goggles2Capture:
 
         try:
             while self._streaming:
+                if self._usb_link or self._usb_data or self._usb_stream:
+                    # Safety net: catches any disconnect path that skipped an
+                    # explicit reset above, so a fresh wait always starts clean.
+                    self._usb_link = self._usb_data = self._usb_stream = False
+                    self._emit_usb_state()
                 log.info("Waiting for goggles to connect (USB ENABLE event) …")
                 print("[FPVLink] Waiting for goggles USB connection…", file=sys.stderr, flush=True)
 
@@ -911,11 +948,19 @@ class Goggles2Capture:
                                 if exc.errno in (108, 5):   # ESHUTDOWN / EIO
                                     log.info("Endpoint closed (device disconnected).")
                                     self._enabled_event.clear()
+                                    self._usb_link = False
+                                    self._usb_data = False
+                                    self._usb_stream = False
+                                    self._emit_usb_state()
                                     break
                                 raise
 
                             if not chunk:
                                 continue
+
+                            if not self._usb_data:
+                                self._usb_data = True
+                                self._emit_usb_state()
 
                             rx_buffer.extend(chunk)
 

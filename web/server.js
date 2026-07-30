@@ -136,6 +136,7 @@ const CONFIG_DEFAULTS = {
   ndi_name:         'FPVLink',
   hdmi_lut_enabled: false,
   hdmi_lut_active_id: '',
+  standby_card:     'grounded',  // 'grounded' | 'bars' | 'black'
   bitrate_mbps:     50,
   device_name:      'FPVLink',
   firmware_version: '1.0.0',
@@ -168,6 +169,10 @@ function readConfig() {
       if (typeof rtmp.enabled === 'boolean')   merged.rtmp_enabled = rtmp.enabled;
       if (typeof rtmp.url === 'string')        merged.rtmp_url     = rtmp.url;
       if (typeof rtmp.stream_key === 'string') merged.rtmp_key     = rtmp.stream_key;
+    }
+    const standby = parsed.outputs && parsed.outputs.standby;
+    if (standby) {
+      if (typeof standby.active_card === 'string') merged.standby_card = standby.active_card;
     }
     return merged;
   } catch (err) {
@@ -207,6 +212,10 @@ function validateConfig(body) {
   if (body.hdmi_lut_active_id !== undefined && typeof body.hdmi_lut_active_id !== 'string') {
     errors.push('hdmi_lut_active_id must be a string');
   }
+  const STANDBY_CARDS = ['grounded', 'bars', 'black'];
+  if (body.standby_card !== undefined && !STANDBY_CARDS.includes(body.standby_card)) {
+    errors.push(`standby_card must be one of: ${STANDBY_CARDS.join(', ')}`);
+  }
   ['srt_enabled', 'rtmp_enabled', 'ndi_enabled', 'hdmi_lut_enabled', 'auto_connect'].forEach((k) => {
     if (body[k] !== undefined && typeof body[k] !== 'boolean') {
       errors.push(`${k} must be a boolean`);
@@ -222,12 +231,17 @@ const state = {
   capture_enabled: false,
   pipeline_status: 'standby', // 'live', 'standby', 'offline'
   usb_status:     'disconnected',   // 'connected' | 'disconnected'
+  usb_link:       false,   // gadget enumerated (FUNCTIONFS_ENABLE)
+  usb_data:       false,   // any bytes seen on the bulk-OUT endpoint
+  usb_stream:     false,   // valid H.264 confirmed on port 0x574A
   fps:            0,
   bitrate_kbps:   0,
   latency_ms:     0,
   bytes_received: 0,
   dropped_frames: 0,
   resolution:     '—',
+  frame_gap_mean_ms: 0,
+  frame_gap_p95_ms:  0,
   startedAt:      null,
   // Hardware Telemetry
   soc_temp:              null,
@@ -289,6 +303,8 @@ internalApp.post('/internal/status', (req, res) => {
   if (typeof body.bytes_received === 'number') state.bytes_received = body.bytes_received;
   if (typeof body.dropped_frames === 'number') state.dropped_frames = body.dropped_frames;
   if (typeof body.latency_ms === 'number')     state.latency_ms     = body.latency_ms;
+  if (typeof body.frame_gap_mean_ms === 'number') state.frame_gap_mean_ms = body.frame_gap_mean_ms;
+  if (typeof body.frame_gap_p95_ms === 'number')  state.frame_gap_p95_ms  = body.frame_gap_p95_ms;
   res.json({ok:true});
 });
 internalApp.listen(8081, '127.0.0.1', () => {
@@ -546,6 +562,17 @@ function spawnCapture(cfg) {
         if (stats.bitrate_kbps !== undefined) state.bitrate_kbps = stats.bitrate_kbps;
       } catch (e) {}
     }
+
+    // USB link-state stages, emitted by goggles2.py's _emit_usb_state()
+    if (line.includes('[USBSTATE]')) {
+      try {
+        const jsonStr = line.substring(line.indexOf('{'));
+        const usb = JSON.parse(jsonStr);
+        if (typeof usb.link === 'boolean')   state.usb_link   = usb.link;
+        if (typeof usb.data === 'boolean')   state.usb_data   = usb.data;
+        if (typeof usb.stream === 'boolean') state.usb_stream = usb.stream;
+      } catch (e) {}
+    }
   });
 
   proc.on('close', (code) => {
@@ -554,6 +581,10 @@ function spawnCapture(cfg) {
       state.usb_status = 'disconnected';
       state.streaming  = false;
     }
+    // Capture process is gone — its in-process USB state is meaningless now.
+    state.usb_link = false;
+    state.usb_data = false;
+    state.usb_stream = false;
   });
 
   proc.on('error', (err) => {
@@ -619,6 +650,12 @@ app.post('/api/config', (req, res) => {
     enabled: !!updated.rtmp_enabled,
     url: typeof updated.rtmp_url === 'string' ? updated.rtmp_url.trim() : (current.outputs?.rtmp?.url || ''),
     stream_key: typeof updated.rtmp_key === 'string' ? updated.rtmp_key : (current.outputs?.rtmp?.stream_key || ''),
+  };
+  updated.outputs.standby = {
+    ...(updated.outputs.standby || {}),
+    active_card: typeof updated.standby_card === 'string' && updated.standby_card.trim()
+      ? updated.standby_card.trim()
+      : 'grounded',
   };
   try {
     writeConfig(updated);
@@ -927,7 +964,12 @@ setInterval(() => {
     latency_ms:     state.latency_ms,
     dropped_frames: state.dropped_frames,
     resolution:     state.resolution,
+    frame_gap_mean_ms: state.frame_gap_mean_ms,
+    frame_gap_p95_ms:  state.frame_gap_p95_ms,
     usb_status:     state.usb_status,
+    usb_link:       state.usb_link,
+    usb_data:       state.usb_data,
+    usb_stream:     state.usb_stream,
     bytes_received: state.bytes_received,
     uptime_seconds: uptimeSeconds(),
     

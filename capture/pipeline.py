@@ -33,8 +33,17 @@ Gst.init(sys.argv)
 
 SOCK = "/run/fpvlink/live.sock"
 STREAM_RELAY_SOCK = "/run/fpvlink/stream_relay.sock"
-STANDBY_IMAGE = os.path.join(os.path.dirname(__file__), "standby.jpg")
 STATUS_URL = "http://127.0.0.1:8081/internal/status"
+
+# Selectable standby/test cards. "grounded" is the original single standby
+# image, unchanged — it's the default so existing behaviour is untouched
+# unless a user explicitly picks a different card in the dashboard.
+DEFAULT_STANDBY_CARD = "grounded"
+STANDBY_CARDS = {
+    "grounded": os.path.join(os.path.dirname(__file__), "standby.jpg"),
+    "bars":     os.path.join(os.path.dirname(__file__), "cards", "bars.jpg"),
+    "black":    os.path.join(os.path.dirname(__file__), "cards", "black.jpg"),
+}
 CONFIG_PATH = os.environ.get(
     "FPVLINK_CONFIG",
     os.path.join(os.path.dirname(__file__), "..", "system", "config.json"),
@@ -71,6 +80,34 @@ def load_lut_config():
     except Exception as e:
         print(f"[Pipeline] LUT config read failed ({e}); LUT disabled", flush=True)
         return False, ""
+
+
+def load_standby_config():
+    """Read outputs.standby.active_card from config.json → card id.
+
+    Defensive on purpose, same contract as load_ndi_config/load_lut_config:
+    any read/parse error, or an id we don't recognise, falls back to the
+    default card rather than breaking the always-on display.
+    """
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        card_id = str((cfg.get("outputs") or {}).get("standby", {}).get("active_card") or DEFAULT_STANDBY_CARD)
+        return card_id if card_id in STANDBY_CARDS else DEFAULT_STANDBY_CARD
+    except Exception as e:
+        print(f"[Pipeline] Standby-card config read failed ({e}); using default", flush=True)
+        return DEFAULT_STANDBY_CARD
+
+
+def resolve_standby_image(card_id):
+    """Map a standby-card id to an existing image path, falling back to the
+    default card if the configured one is missing on disk (must never leave
+    the standby filesrc pointing at a nonexistent file)."""
+    path = STANDBY_CARDS.get(card_id, STANDBY_CARDS[DEFAULT_STANDBY_CARD])
+    if not os.path.exists(path):
+        print(f"[Pipeline] Standby card '{card_id}' file missing ({path}) — falling back to default", flush=True)
+        return STANDBY_CARDS[DEFAULT_STANDBY_CARD]
+    return path
 
 
 def build_lut_segment(enabled, active_id):
@@ -144,6 +181,16 @@ q_in = 0          # buffers entering the display queue
 q_out = 0         # buffers leaving the display queue          → (in-out-level)=dropped
 latency_ms = 0.0  # EMA of internal ingest→display delay        → latency (see _dispq_out_probe)
 
+# Frame-pacing: how evenly live frames are actually arriving, independent of
+# any fixed frame-period assumption (source framerate varies by goggles model
+# /resolution — see the non-16:9 fix). The dashboard compares mean/p95 against
+# the already-reported fps stat (1000/fps ≈ ideal gap) rather than this probe
+# hardcoding one. A fixed-size window, not a lifetime average, so a transient
+# stall doesn't permanently discolor the reading once it clears.
+FRAME_GAP_WINDOW = 120  # ~2s of history at 60fps
+frame_gap_samples = collections.deque(maxlen=FRAME_GAP_WINDOW)
+_last_frame_arrival_mono = None
+
 # Always-on pipeline using input-selector for instant switching.
 # - sync-streams=false on input-selector ensures the inactive branch keeps running and dropping buffers,
 #   so when we switch, the active branch is already producing frames.
@@ -202,6 +249,14 @@ t. ! queue name=dispq max-size-buffers=6 leaky=downstream {lut_segment}! kmssink
 {ndi_branch}
 {preview_branch}
 """
+
+# Selectable standby/test card (Grounded/Bars/Black) — resolved to a real,
+# existing file path up front so build_pipeline_string's filesrc can never
+# point at something missing.
+standby_card_id = load_standby_config()
+STANDBY_IMAGE = resolve_standby_image(standby_card_id)
+if standby_card_id != DEFAULT_STANDBY_CARD:
+    print(f"[Pipeline] Standby card: '{standby_card_id}' ({STANDBY_IMAGE})", flush=True)
 
 # NDI output taps the same tee as the display, so the NDI source stays alive
 # across live↔standby switches (receivers always see a picture). ndisink accepts
@@ -343,6 +398,18 @@ def report_status_loop():
 
             latency = round(latency_ms, 1)
 
+            # Frame-pacing gauge: mean/p95 of inter-frame arrival gaps over the
+            # current window. Only meaningful while live (see status gate below).
+            gaps = list(frame_gap_samples)
+            if gaps:
+                frame_gap_mean_ms = round(sum(gaps) / len(gaps), 2)
+                sorted_gaps = sorted(gaps)
+                p95_idx = min(len(sorted_gaps) - 1, int(round(0.95 * (len(sorted_gaps) - 1))))
+                frame_gap_p95_ms = round(sorted_gaps[p95_idx], 2)
+            else:
+                frame_gap_mean_ms = 0.0
+                frame_gap_p95_ms = 0.0
+
             # No live signal → report a clean idle state rather than stale numbers.
             if status != "live":
                 fps = 0.0
@@ -350,6 +417,8 @@ def report_status_loop():
                 dropped = 0
                 resolution = "—"
                 latency = 0.0
+                frame_gap_mean_ms = 0.0
+                frame_gap_p95_ms = 0.0
 
             payload = {
                 "status": status,
@@ -359,6 +428,8 @@ def report_status_loop():
                 "bytes_received": bytes_total,
                 "dropped_frames": dropped,
                 "latency_ms": latency,
+                "frame_gap_mean_ms": frame_gap_mean_ms,
+                "frame_gap_p95_ms": frame_gap_p95_ms,
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(STATUS_URL, data=data, headers={"Content-Type": "application/json"})
@@ -374,13 +445,17 @@ def on_live_probe(pad, info):
     Updates the freshness timestamp. If we were in standby, flips the active pad back to live.
     This safely executes on the live branch's streaming thread.
     """
-    global last_live_time, frame_count
+    global last_live_time, frame_count, _last_frame_arrival_mono
     last_live_time = time.time()
     frame_count += 1
 
     current = sel.get_property("active-pad")
     if current != pad:
         sel.set_property("active-pad", pad)
+        # Coming back from a standby stall — the gap since the last live
+        # frame reflects the outage, not real pacing. Drop it rather than let
+        # one huge sample skew the window.
+        _last_frame_arrival_mono = None
     return Gst.PadProbeReturn.OK
 
 STANDBY_CHECK_MS = 200  # how often the fallback watchdog checks for signal loss
@@ -418,9 +493,19 @@ dispq = pipeline.get_by_name("dispq")
 def _dispq_in_probe(pad, info):
     # Only count while live: in standby the queue carries the 60fps card, whose
     # drops are irrelevant. last_live_time freshness = we're currently live.
-    global q_in
+    global q_in, _last_frame_arrival_mono
     if time.time() - last_live_time < STALL_TIMEOUT_SEC:
         q_in += 1
+        now_mono = time.monotonic()
+        if _last_frame_arrival_mono is not None:
+            gap_ms = (now_mono - _last_frame_arrival_mono) * 1000.0
+            # Ignore nonsense samples (first frame after a live-switch, a
+            # warm-restart transient) the same way the latency probe below
+            # ignores clock discontinuities — one bad gap must not skew the
+            # window.
+            if 0.0 < gap_ms < 2000.0:
+                frame_gap_samples.append(gap_ms)
+        _last_frame_arrival_mono = now_mono
     return Gst.PadProbeReturn.OK
 
 def _dispq_out_probe(pad, info):
@@ -597,22 +682,24 @@ def config_watch_loop(initial):
 
     server.js can't restart this service (its sudoers grants only python3, not
     systemctl), so instead we watch the config and quit the main loop on a
-    change to the NDI branch or the HDMI LUT. systemd's Restart=always then
-    respawns us, rebuilding the graph with (or without) those elements. Costs a
-    ~3s standby blip on toggle — acceptable for a deliberate config change.
+    change to the NDI branch, the HDMI LUT, or the active standby card.
+    systemd's Restart=always then respawns us, rebuilding the graph with (or
+    without) those elements. Costs a ~3s standby blip on toggle — acceptable
+    for a deliberate config change (and a standby-card change happens before
+    the drone is live anyway).
     (SRT/RTMP are watched by stream_output.py's own config loop, not this one.)
     """
     while True:
         time.sleep(2.0)
-        current = (load_ndi_config(), load_lut_config())
+        current = (load_ndi_config(), load_lut_config(), load_standby_config())
         if current != initial:
-            print("[Pipeline] config changed (NDI/LUT) — restarting to apply", flush=True)
+            print("[Pipeline] config changed (NDI/LUT/standby) — restarting to apply", flush=True)
             main_loop.quit()
             return
 
 threading.Thread(
     target=config_watch_loop,
-    args=(((ndi_enabled, ndi_name), (lut_enabled, lut_active_id)),),
+    args=(((ndi_enabled, ndi_name), (lut_enabled, lut_active_id), standby_card_id),),
     daemon=True,
 ).start()
 
