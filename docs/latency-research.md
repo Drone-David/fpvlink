@@ -4,8 +4,12 @@ Measured 2026-07-30 on the live RK3588 device, GStreamer 1.28.2, real DRM displa
 (connector 217 / plane 194), 1080p60 H.264 at 44.5 Mbps fed through the real
 ingest socket path.
 
-**Headline: the box currently adds ~77 ms, and ~66 ms of that is removable with
-two one-line pipeline changes. Neither of them is the LUT.**
+**Headline: the box used to add ~94 ms on the real feed; it now adds ~39 ms,
+from two one-line pipeline changes (§3). Neither of them was the LUT.**
+
+**Status:** §3 shipped and verified live. §4 (the `h264parse` idea) was measured
+on real hardware and **ruled out** — it was a synthetic-test artifact. The
+largest remaining lever is a goggles setting, not code (§6.6).
 
 ---
 
@@ -123,53 +127,52 @@ counters, is the one that would have caught this.
 
 ---
 
-## 4. The second one: `h264parse` costs a full frame period
+## 4. RESOLVED — `h264parse` is NOT costing a frame period on the real feed
 
-`h264parse` cannot emit an access unit until it sees the start of the next one.
-Measured cost: **17.2 ms of a 20.9 ms pre-display budget** at 60 fps.
+**Measured on the live goggles feed 2026-07-30 and closed. Do not build AU
+reassembly.**
 
-Feeding complete access units with `alignment=au` on the appsrc caps dropped
-parse latency from **17.39 ms → 0.36 ms**, with correct frame counts throughout.
+The synthetic test showed `h264parse` holding every frame 17.39 ms, dropping to
+0.36 ms when fed pre-assembled access units. That looked like the single biggest
+remaining lever. It was an artifact of the test feeder.
 
-This does **not** contradict the existing warning in the project notes ("NO
-`alignment=au` on appsrc — the feed sends 4096-byte fragments and claiming
-au-alignment makes h264parse truncate every multi-buffer frame"). That warning is
-about *lying* — declaring au-alignment while pushing fragments. The proposal is
-to make the declaration true by reassembling access units in `feed_loop()` before
-pushing.
+`scripts/relay-arrival.py`, tapping the live stream-relay socket at 1080p60 /
+9.6 Mbps, 837 frames:
 
-### The catch, and why this needs one hardware measurement
-
-Reassembly is only a win if we can tell a frame is **complete** without waiting
-for the next frame's first byte — otherwise we have reimplemented `h264parse`'s
-delay in Python and gained nothing.
-
-Whether that is possible depends on how the goggles deliver bytes, which cannot
-be answered without goggles attached:
-
-* **If frames arrive in a burst** (all ~23 fragments back-to-back, then idle
-  until the next frame), an idle gap of 1–2 ms marks end-of-frame, and we recover
-  nearly the whole 17 ms.
-* **If frames trickle** evenly across the frame interval, the frame genuinely is
-  not complete until late in the interval and there is nothing to recover.
-  Measured this case deliberately: a trickled feed cost 18.50 ms at parse versus
-  17.39 ms for a burst — i.e. under trickle the wait is the bytes, not the parser.
-* **A short final LogicLink payload** would be a free, exact end-of-frame marker
-  if the goggles fragment into full-size chunks with a short remainder.
-
-Prior notes say a real frame is ~12 KB (~3–4 fragments), which suggests bursty
-delivery and a low real bitrate — encouraging, but not measured.
-
-`scripts/measure-arrival.py` answers all three questions in one run. It drives
-the USB gadget through `goggles2.py`'s existing `stream(callback=...)` hook, so
-it never touches the production socket, pipeline, or display — it only records
-arrival timestamps and payload sizes.
-
-```bash
-systemctl stop fpvlink-capture && python3 scripts/measure-arrival.py --seconds 20
+```
+frame period   16.68 ms   (~59.9 fps)
+frame span     16.42 ms   (first byte -> last byte)
+span / period  0.98       -> TRICKLE
 ```
 
----
+**The goggles dribble each frame across essentially the whole frame interval.**
+The frame is not complete until the interval is nearly over, so `h264parse` is
+not holding anything back — it is waiting for bytes that have not arrived. The
+17 ms is the goggles' transmission time, not parser overhead.
+
+Confirmed by the inter-frame gap: the next frame's AUD arrives **0.027 ms** after
+the previous frame's last byte, so the parser closes each access unit
+essentially instantly.
+
+Both candidate end-of-frame signals are also dead, independently:
+
+* **Short final chunk** — 0/837 frames end on a short chunk, while 23.9% of
+  *mid-frame* chunks are short. The signal is precisely backwards.
+* **Idle gap** — intra-frame gaps reach p95 17.97 ms while inter-frame gaps are
+  p05 0.027 ms. Completely overlapping; no timeout can separate them.
+
+### Two measurement traps this cost, worth not repeating
+
+1. **The test feeder bursted each frame.** No real feed does. Any synthetic
+   ingest benchmark must reproduce the source's *pacing*, not just its bitrate —
+   the trickle variant in `latprobe.py` (`FEED=frag_trickle`) predicted this
+   correctly at 18.50 ms and was ignored in favour of the burst number.
+2. **Frame-boundary detection double-counted.** Treating "any of AUD/SPS/PPS/
+   SEI/VCL" as a frame opener splits one frame in two whenever the AUD and the
+   slice land in different 4 KB chunks — a 60 fps feed measured 122 fps, and
+   produced a confident "BURST — WORTH BUILDING" verdict that was pure artifact.
+   This feed emits exactly one AUD per frame; key on AUD alone. Always sanity-check
+   derived fps against the known source rate before trusting any of the numbers.
 
 ## 5. The LUT: real cost, and a cliff worth knowing about
 
@@ -210,10 +213,9 @@ always.** Together they are worth ~66 ms.
    `videoconvert` was pinning a full core in the display branch, which no longer
    exists. Re-test on a real feed rather than trusting either result.*
 
-3. **Reassemble access units in `feed_loop()` + `alignment=au` on appsrc.**
-   Worth up to ~17 ms — pending the `measure-arrival.py` result in §4. Do the
-   measurement before writing the code; if delivery turns out to be trickled,
-   this is not worth building.
+3. ~~Reassemble access units in `feed_loop()`~~ — **RULED OUT, see §4.** The
+   goggles trickle each frame across the whole frame interval, so there is no
+   parser-induced wait to remove.
 
 **Then a genuine low-latency mode**, for the remainder:
 
@@ -224,12 +226,13 @@ always.** Together they are worth ~66 ms.
 
 **Outside the pipeline:**
 
-6. **Fly the goggles at 1080p100 rather than 1080p60.** Cuts the DJI link from
-   40 ms to 30 ms (published spec), and shortens every frame-quantised delay in
-   our path by 40 %. Probably the single largest remaining win, and it costs
-   nothing but a settings change. Whether the USB tap follows the link framerate
-   is unknown — `measure-arrival.py` reports the tap's actual fps, so the same
-   run answers this.
+6. **Fly the goggles at 1080p100 rather than 1080p60. This is now the single
+   largest remaining lever.** Frame arrival time is bounded by the frame period
+   (§4), so a shorter period is the only way to shrink it: ~16.4 ms of arrival
+   becomes ~10 ms. It independently cuts the DJI link from 40 ms to 30 ms
+   (published spec). No code — just a goggles setting. Confirmed that the USB tap
+   does follow the link rate: it delivered a genuine 60 fps on a healthy link
+   (an earlier 30 fps reading was a degraded low-power VTX, not the tap's rate).
 7. **Monitor choice matters.** The attached display tops out at 1080p75
    (mode 0 is 1920x1080@74.97, though the kernel cmdline forces @60). A 120 Hz+
    monitor would cut the vsync quantisation and scanout tail.
