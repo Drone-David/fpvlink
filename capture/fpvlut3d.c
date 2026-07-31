@@ -27,10 +27,16 @@
  *      equal static split leaves the frame waiting on the slow A55 cores.
  *
  * Property
- * ────────
- *   file : path to a .cube file. Parsed on set. If parsing fails the element
- *          degrades to passthrough (it never corrupts or drops frames) so a bad
- *          LUT can't take down the always-on display pipeline.
+ * ─────────
+ *   file    : path to a .cube file. Parsed on set. If parsing fails the element
+ *             degrades to passthrough (it never corrupts or drops frames) so a
+ *             bad LUT can't take down the always-on display pipeline.
+ *   enabled : grade or don't (default TRUE), switchable while PLAYING. Exists
+ *             because the LUT sits after the input-selector, so it would
+ *             otherwise regrade the synthetic standby card — ~1.6 cores of
+ *             continuous work on a fanless box for a picture that needs no
+ *             D-Log→709 conversion. pipeline.py clears it on the switch to
+ *             standby and sets it again on the switch back to live.
  *
  * Build
  * ─────
@@ -62,6 +68,7 @@ struct _FpvLut3d
   GstVideoFilter parent;
 
   gchar   *file;        /* path to .cube (property)                     */
+  gboolean enabled;     /* property; FALSE → grade nothing, pass frames */
   gint     size;        /* LUT_3D_SIZE N; 0 → no LUT loaded (passthru)  */
   gfloat  *data;        /* N*N*N*3 floats, red-fastest ordering         */
   gfloat   dmin[3];     /* DOMAIN_MIN (default 0)                       */
@@ -94,7 +101,7 @@ struct _FpvLut3d
   gfloat   yscale, yoff, cscale;   /* RGB→YUV range compression         */
 };
 
-enum { PROP_0, PROP_FILE };
+enum { PROP_0, PROP_FILE, PROP_ENABLED };
 
 /* NV12 first (preferred): it is what the hardware decoder emits and what the
  * DRM overlay plane accepts, so negotiating it lets this element sit directly
@@ -110,6 +117,30 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src",
     GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE (FPVLUT3D_FORMATS)));
 
 G_DEFINE_TYPE (FpvLut3d, fpv_lut3d, GST_TYPE_VIDEO_FILTER);
+
+/* Put the element in GstBaseTransform passthrough whenever it has nothing to
+ * do — disabled, or no usable LUT loaded. That skips the make-writable copy
+ * base transform would otherwise do on every buffer (the display tee means
+ * frames are never singly-referenced, so "in place" really means "copy first"),
+ * which restores the zero-copy decoder→plane path while we're idle.
+ *
+ * Passthrough alone is NOT enough to stop the grading, though: base transform
+ * still calls transform_ip on a passthrough element (it logs "doing passthrough
+ * transform_ip"), and GstVideoFilter then maps the frame and calls
+ * transform_frame_ip regardless. fpv_lut3d_transform_ip below is what actually
+ * short-circuits the work. Both are needed. */
+static void
+fpv_lut3d_update_passthrough (FpvLut3d * self)
+{
+  gboolean have_lut;
+
+  g_mutex_lock (&self->lock);
+  have_lut = (self->data != NULL && self->size >= 2);
+  g_mutex_unlock (&self->lock);
+
+  gst_base_transform_set_passthrough (GST_BASE_TRANSFORM (self),
+      !have_lut || !g_atomic_int_get (&self->enabled));
+}
 
 /* ── .cube parsing ─────────────────────────────────────────────────────────
  * Fills self->data (freshly allocated) and self->size on success. On any
@@ -488,6 +519,23 @@ fpv_lut3d_transform_frame_ip (GstVideoFilter * filter, GstVideoFrame * frame)
   return GST_FLOW_OK;
 }
 
+/* The real gate for `enabled`. GstVideoFilter's transform_ip maps the frame
+ * before it ever reaches transform_frame_ip, and base transform calls it even
+ * in passthrough — so returning early has to happen here, above the map, or a
+ * disabled element still pays a full-frame READWRITE dmabuf mapping per buffer.
+ * Chains up to GstVideoFilter for the normal (grading) path. */
+static GstFlowReturn
+fpv_lut3d_transform_ip (GstBaseTransform * base, GstBuffer * buf)
+{
+  FpvLut3d *self = FPV_LUT3D (base);
+
+  if (!g_atomic_int_get (&self->enabled))
+    return GST_FLOW_OK;
+
+  return GST_BASE_TRANSFORM_CLASS (fpv_lut3d_parent_class)->transform_ip (base,
+      buf);
+}
+
 /* ── GObject boilerplate ───────────────────────────────────────────────── */
 static void
 fpv_lut3d_set_property (GObject * obj, guint id, const GValue * val,
@@ -499,6 +547,13 @@ fpv_lut3d_set_property (GObject * obj, guint id, const GValue * val,
       g_free (self->file);
       self->file = g_value_dup_string (val);
       fpv_lut3d_load (self, self->file);
+      fpv_lut3d_update_passthrough (self);
+      break;
+    case PROP_ENABLED:
+      /* Atomic because the streaming thread reads it per buffer without the
+       * mutex — a stale read costs at most one wrongly-graded frame. */
+      g_atomic_int_set (&self->enabled, g_value_get_boolean (val));
+      fpv_lut3d_update_passthrough (self);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (obj, id, pspec);
@@ -512,6 +567,9 @@ fpv_lut3d_get_property (GObject * obj, guint id, GValue * val, GParamSpec * pspe
   switch (id) {
     case PROP_FILE:
       g_value_set_string (val, self->file);
+      break;
+    case PROP_ENABLED:
+      g_value_set_boolean (val, g_atomic_int_get (&self->enabled));
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (obj, id, pspec);
@@ -534,6 +592,9 @@ fpv_lut3d_init (FpvLut3d * self)
 {
   g_mutex_init (&self->lock);
   self->dmax[0] = self->dmax[1] = self->dmax[2] = 1.0f;
+  self->enabled = TRUE;
+  /* No LUT yet, so start bypassed; loading a file re-evaluates this. */
+  gst_base_transform_set_passthrough (GST_BASE_TRANSFORM (self), TRUE);
 }
 
 static void
@@ -541,6 +602,7 @@ fpv_lut3d_class_init (FpvLut3dClass * klass)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
   GstElementClass *element_class = GST_ELEMENT_CLASS (klass);
+  GstBaseTransformClass *btrans_class = GST_BASE_TRANSFORM_CLASS (klass);
   GstVideoFilterClass *vfilter_class = GST_VIDEO_FILTER_CLASS (klass);
 
   gobject_class->set_property = fpv_lut3d_set_property;
@@ -551,6 +613,14 @@ fpv_lut3d_class_init (FpvLut3dClass * klass)
       g_param_spec_string ("file", "File", "Path to a .cube 3D LUT file",
           NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_ENABLED,
+      g_param_spec_boolean ("enabled", "Enabled",
+          "Apply the LUT. Set FALSE to pass frames through untouched — used to "
+          "skip grading the synthetic standby card, which costs ~1.6 cores to "
+          "regrade for no benefit. Safe to toggle while playing.",
+          TRUE, G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING |
+          G_PARAM_STATIC_STRINGS));
+
   gst_element_class_set_static_metadata (element_class,
       "FPVLink 3D LUT", "Filter/Effect/Video",
       "Applies a .cube 3D LUT with trilinear interpolation",
@@ -559,6 +629,7 @@ fpv_lut3d_class_init (FpvLut3dClass * klass)
   gst_element_class_add_static_pad_template (element_class, &sink_template);
   gst_element_class_add_static_pad_template (element_class, &src_template);
 
+  btrans_class->transform_ip = fpv_lut3d_transform_ip;
   vfilter_class->set_info = fpv_lut3d_set_info;
   vfilter_class->transform_frame_ip = fpv_lut3d_transform_frame_ip;
 }

@@ -110,6 +110,11 @@ def resolve_standby_image(card_id):
     return path
 
 
+# Element name for the LUT in the display branch, so the live↔standby switch can
+# find it after parse_launch (see set_lut_active).
+LUT_ELEMENT_NAME = "hdmilut"
+
+
 def build_lut_segment(enabled, active_id):
     """Return the GStreamer fragment that colour-grades the display via fpvlut3d,
     or "" to leave the zero-copy NV12 path untouched.
@@ -143,7 +148,9 @@ def build_lut_segment(enabled, active_id):
     # neither changes nor needs to assert format/resolution. (An earlier version
     # asserted a hardcoded 1920x1080 here and crashed the pipeline on any
     # non-16:9 source, bypassing the render-rectangle fix entirely.)
-    return f'! fpvlut3d file="{safe}" '
+    # Named so the live↔standby switch can bypass it while the standby card is
+    # showing — see set_lut_active().
+    return f'! fpvlut3d name={LUT_ELEMENT_NAME} file="{safe}" '
 
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
 KMS_CONNECTOR_ID = 217
@@ -310,8 +317,60 @@ sel = pipeline.get_by_name("sel")
 live_pad = sel.get_static_pad("sink_0")
 standby_pad = sel.get_static_pad("sink_1")
 
-# Default to standby card
+# ── LUT gating: grade live video only, never the standby card ────────────────
+# The LUT sits on the display branch AFTER the input-selector, so without this it
+# regrades the standby card too. That card is a synthetic test pattern
+# (Grounded/Bars/Black), not camera footage needing a D-Log→709 conversion, so
+# the work is pure waste — and it isn't cheap: measured on the RK3588, standby
+# with the LUT on costs ~158% of one core (vs ~30% with it off) continuously,
+# which is real heat and power on a fanless box that may sit idle between
+# flights. Live 1080p60 at ~567% is expected and stays untouched.
+#
+# Gating is done in place, via the element's `enabled` property, rather than by
+# moving the element onto the live branch (before the selector) on purpose: the
+# LUT is deliberately placed after the display tee so NDI output stays UNGRADED,
+# and moving it upstream of the selector would start grading NDI too — a silent
+# behaviour change for anyone already colour-managing downstream. Toggling in
+# place keeps the graph, and therefore that contract, exactly as it was.
+#
+# Note it has to be the property, not gst_base_transform_set_passthrough() from
+# here: passthrough does NOT stop a GstVideoFilter from working. Base transform
+# still calls transform_ip on a passthrough element (it logs "doing passthrough
+# transform_ip"), GstVideoFilter still maps the frame, and the grade still runs
+# — measured, standby stayed at ~158% with passthrough set. The property gates
+# above that map inside the element, and sets passthrough itself as well so the
+# bypassed frames also skip base transform's make-writable copy.
+#
+# Setting a property is just a flag store (no renegotiation, no state change),
+# so it's safe to call from the streaming thread in on_live_probe.
+lut_element = pipeline.get_by_name(LUT_ELEMENT_NAME)  # None whenever the LUT is off
+_lut_active = None  # None = never set, so the first call always applies
+
+def set_lut_active(active):
+    """Grade (live) or bypass (standby card).
+
+    No-op when the LUT is off or unavailable — lut_element is then None, which
+    is the normal case, not an error. Never allowed to raise: a failure here
+    must cost at most a wrongly-graded picture, never the always-on display, so
+    it gives up on gating and leaves the LUT running for everything (the old
+    behaviour) rather than propagating. That also covers running against an
+    older libgstfpvlut3d.so built before the `enabled` property existed.
+    """
+    global lut_element, _lut_active
+    if lut_element is None or active == _lut_active:
+        return
+    try:
+        lut_element.set_property("enabled", active)
+        _lut_active = active
+    except Exception as e:
+        print(f"[Pipeline] LUT enable toggle failed ({e}); leaving the LUT "
+              f"running for every source — rebuild the plugin with "
+              f"setup/build-lut-plugin.sh to gate it", flush=True)
+        lut_element = None  # stop gating for this run instead of logging per switch
+
+# Default to standby card — and to a bypassed LUT, matching it.
 sel.set_property("active-pad", standby_pad)
+set_lut_active(False)
 
 # Aspect-ratio-preserving display fit. Goggles/cameras that aren't exactly
 # 1920x1080 (e.g. a 4:3 source) used to fail caps negotiation right after the
@@ -454,6 +513,7 @@ def on_live_probe(pad, info):
     current = sel.get_property("active-pad")
     if current != pad:
         sel.set_property("active-pad", pad)
+        set_lut_active(True)   # real footage again — start grading (see set_lut_active)
         # Coming back from a standby stall — the gap since the last live
         # frame reflects the outage, not real pacing. Drop it rather than let
         # one huge sample skew the window.
@@ -479,6 +539,7 @@ def standby_watchdog_tick():
     if time.time() - last_live_time > STALL_TIMEOUT_SEC:
         if sel.get_property("active-pad") != standby_pad:
             sel.set_property("active-pad", standby_pad)
+            set_lut_active(False)  # test card needs no grade (see set_lut_active)
             print("[Pipeline] Live signal lost — switched to standby card", flush=True)
     return True  # keep the timer registered
 
