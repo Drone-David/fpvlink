@@ -155,6 +155,32 @@ KMS_CONNECTOR_ID = 217
 # which can't accept NV12 and dies with an instant EOS (no video).
 KMS_PLANE_ID = 194
 
+# Display-queue depth. This was 6 and it was costing ~56ms of latency, because
+# of the kmssink bug below: the sink only drained at ~30fps, so a 6-deep queue
+# sat PERMANENTLY FULL, and a full queue is pure delay (6 buffers of hold time).
+# Measured on-device at 1080p60 (scripts/latprobe.py, real DRM display,
+# ingest->handed-to-kmssink): depth 6 = 61.3ms, depth 1 = 6.0ms, with identical
+# frame delivery. With skip-vsync below also set, depth 1 delivers 100% of a
+# 60fps feed (2600/2600 frames, zero drops) at 11.0ms.
+# An older note warned that depth 2 caused visible pixelation under high motion
+# — but that was when a software `videoconvert` was pinning a full core in this
+# branch (long since removed by the plane-194 zero-copy fix). If pixelation ever
+# returns under real high-motion footage, this is the first knob to raise.
+DISPQ_BUFFERS = 1
+
+# `skip-vsync=true` on kmssink (set in the pipeline string below). Without it the
+# sink consumed a hard ~30fps NO MATTER the input rate — measured 30fps in ->
+# 100% displayed, 50 -> 60%, 60 -> 50%, every case landing on ~30 out, i.e. half
+# of every 1080p60 feed was being thrown away at the display. kmssink's own
+# property doc names the cause: "will not wait internally for vsync. Should be
+# used for atomic drivers to avoid double vsync" — this IS an atomic driver, so
+# it was waiting twice per frame and locking to half the 60Hz refresh.
+# Setting it restored 100% frame delivery (2604/2600 frames at 1080p60).
+# Trade-off: skipping the internal vsync wait can tear. That's the normal choice
+# for FPV (full motion + low delay beats a perfectly-torn-free frame), but if
+# tearing is ever objectionable on a particular panel, this is the knob — and
+# turning it off costs you half your frame rate, not just some smoothness.
+
 # Cold-boot HDMI warm-up. On a genuine cold boot the kernel force-enables the
 # HDMI connector (cmdline video=HDMI-A-1:...@60e, no real EDID handshake) and its
 # CRTC often isn't scanning out yet when our first modeset lands — the screen
@@ -247,7 +273,7 @@ filesrc location={STANDBY_IMAGE}
   ! sel.
 
 sel. ! tee name=t
-t. ! queue name=dispq max-size-buffers=6 leaky=downstream {lut_segment}! kmssink name=hdmisink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} can-scale=true sync=false
+t. ! queue name=dispq max-size-buffers={DISPQ_BUFFERS} leaky=downstream {lut_segment}! kmssink name=hdmisink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} can-scale=true sync=false skip-vsync=true
 {ndi_branch}
 {preview_branch}
 """
