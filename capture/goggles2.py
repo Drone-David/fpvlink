@@ -188,6 +188,64 @@ DUML_ID_GOGGLES: int = 0x08   # Goggles / air unit
 # the goggles just need a valid framed response to stay alive.
 _DUML_ACK_PAYLOAD: bytes = b'\x00'   # single retcode byte = success
 
+# ── DUML cmd_type bit flags ──────────────────────────────────────────────────
+# bit 7 set  = this packet is a RESPONSE (never reply to a reply)
+# bit 6 set  = the sender wants an ACK
+DUML_TYPE_RESPONSE: int = 0x80
+DUML_TYPE_WANTS_ACK: int = 0x40
+
+
+# ── Goggles-UI interference mitigations (both OFF by default) ────────────────
+# The user observed that with USB-C connected, the goggles' own menus glitch and
+# transmission settings cannot be changed; unplugging fixes it. Two things this
+# script does are plausible causes, and each has a flag so they can be enabled
+# one at a time on real hardware and rolled back from config alone (no redeploy).
+#
+#   capture.strict_duml_ack
+#     Today we reply to EVERY DUML packet seen on the control port, forging
+#     src_id = the packet's dst_id — i.e. impersonating whichever internal
+#     component the packet was addressed to, and echoing the request payload
+#     back as if it were an answer. The goggles' components talk to each other
+#     over this bus, so a settings request gets two replies: the real one and
+#     our fabricated one. ~2800 forged packets per session. With this enabled we
+#     only answer packets genuinely addressed to us (dst == DUML_ID_MOBILE) that
+#     are requests (not responses) and that actually asked for an ACK.
+#
+#   capture.oneshot_app_register
+#     Keep-alive "Command B" is an app-registration ("APP") that tells the
+#     goggles a phone app has attached — and we resend it every 5s forever. With
+#     this enabled it is sent only while video is NOT flowing (so it still
+#     starts the stream, and still restarts it after a stall), not continuously.
+#
+# Both default False = today's exact behaviour, so deploying this file alone
+# changes nothing until a flag is turned on.
+CONFIG_PATH = os.environ.get(
+    "FPVLINK_CONFIG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "system", "config.json"),
+)
+
+# How long without a video payload before we consider the stream stalled and
+# re-send the app registration (oneshot_app_register only).
+APP_REREGISTER_STALL_SEC: float = 1.0
+
+
+def load_capture_flags() -> dict:
+    """Read the interference-mitigation flags from config.json.
+
+    Defensive on purpose, same contract as pipeline.py's loaders: any read or
+    parse error falls back to today's behaviour rather than raising, because
+    this runs in the capture process that the whole video path depends on.
+    """
+    defaults = {"strict_duml_ack": False, "oneshot_app_register": False}
+    try:
+        import json
+        with open(CONFIG_PATH) as f:
+            cap = (json.load(f).get("capture") or {})
+        return {k: bool(cap.get(k, v)) for k, v in defaults.items()}
+    except Exception as exc:
+        log.warning("capture flag read failed (%s); using defaults %s", exc, defaults)
+        return defaults
+
 
 # ── CRC tables (DJI-specific) ────────────────────────────────────────────────
 
@@ -556,6 +614,10 @@ class Goggles2Capture:
         self._usb_link     = False   # gadget enumerated (FUNCTIONFS_ENABLE)
         self._usb_data     = False   # any bytes seen on the bulk-OUT endpoint
         self._usb_stream   = False   # valid H.264 confirmed on port 0x574A
+        # Monotonic time of the last video payload. Drives oneshot_app_register:
+        # "is the stream actually flowing right now", as opposed to _usb_stream
+        # which latches True on the first frame and never clears.
+        self._last_video_ts = 0.0
         import threading
         self._aoa_rebind_requested = threading.Event()
 
@@ -866,6 +928,13 @@ class Goggles2Capture:
         handshake_complete = False
         t_start            = time.monotonic()
 
+        # Read once per stream() call, not per packet — this is the hot path.
+        # Both default False, i.e. the long-standing behaviour, so this is inert
+        # until explicitly enabled in config.json.
+        _flags = load_capture_flags()
+        log.info("capture flags: strict_duml_ack=%s oneshot_app_register=%s",
+                 _flags["strict_duml_ack"], _flags["oneshot_app_register"])
+
         def forward_video(video: bytes, source_desc: str) -> None:
             """
             Forward a chunk of raw H.264 video to the sink.
@@ -879,6 +948,7 @@ class Goggles2Capture:
             nonlocal handshake_complete, total_bytes
             if not video:
                 return
+            self._last_video_ts = time.monotonic()
             if not handshake_complete:
                 handshake_complete = True
                 print(f"[FPVLink] Handshake complete ({duml_tx_count} DUML ACKs) — streaming H.264!", file=sys.stderr, flush=True)
@@ -1021,24 +1091,54 @@ class Goggles2Capture:
                                     if duml_pkt['src_id'] in (0x28, 0x3C):
                                         log_fn("DUML response from 0x%02X: payload=%s", duml_pkt['src_id'], curr_payload.hex())
 
-                                    ack_cmd_type = (duml_pkt['cmd_type'] & 0x7F) | 0x80
-                                    ack_payload  = b'\x00' + duml_pkt['payload'] if duml_pkt['payload'] else b'\x00'
+                                    # Decide whether this packet is ours to answer.
+                                    # Legacy behaviour answers EVERYTHING, forging
+                                    # src_id from the packet's dst_id — i.e. replying
+                                    # on behalf of internal goggles components, which
+                                    # collides with their real answers and is the
+                                    # prime suspect for the goggles' menus glitching
+                                    # while USB-C is attached. See load_capture_flags.
+                                    if _flags["strict_duml_ack"]:
+                                        is_for_us  = duml_pkt['dst_id'] == DUML_ID_MOBILE
+                                        is_request = not (duml_pkt['cmd_type'] & DUML_TYPE_RESPONSE)
+                                        wants_ack  = bool(duml_pkt['cmd_type'] & DUML_TYPE_WANTS_ACK)
+                                        should_ack = is_for_us and is_request and wants_ack
+                                        # Never forge an identity: we answer only as ourselves.
+                                        ack_src_id = DUML_ID_MOBILE
+                                    else:
+                                        should_ack = True
+                                        ack_src_id = duml_pkt['dst_id']
 
-                                    ack = build_duml_ack(
-                                        seq     = duml_pkt['seq'],
-                                        src_id  = duml_pkt['dst_id'],
-                                        dst_id  = duml_pkt['src_id'],
-                                        cmd_set = duml_pkt['cmd_set'],
-                                        cmd_id  = duml_pkt['cmd_id'],
-                                        cmd_type= ack_cmd_type,
-                                        payload = ack_payload,
-                                    )
-                                    try:
-                                        ep_in.write(ack)
-                                        ep_in.flush()
-                                        duml_tx_count += 1
-                                    except OSError as exc:
-                                        log.warning("Failed to send DUML response: %s", exc)
+                                    if not should_ack:
+                                        # Logged so that if suppressing a reply ever breaks
+                                        # the handshake, the journal names exactly what the
+                                        # goggles were waiting on.
+                                        log.debug(
+                                            "not acking src=%02X dst=%02X cmd_type=%02X "
+                                            "cmd_set=%02X cmd_id=%02X",
+                                            duml_pkt['src_id'], duml_pkt['dst_id'],
+                                            duml_pkt['cmd_type'], duml_pkt['cmd_set'],
+                                            duml_pkt['cmd_id'],
+                                        )
+                                    else:
+                                        ack_cmd_type = (duml_pkt['cmd_type'] & 0x7F) | 0x80
+                                        ack_payload  = b'\x00' + duml_pkt['payload'] if duml_pkt['payload'] else b'\x00'
+
+                                        ack = build_duml_ack(
+                                            seq     = duml_pkt['seq'],
+                                            src_id  = ack_src_id,
+                                            dst_id  = duml_pkt['src_id'],
+                                            cmd_set = duml_pkt['cmd_set'],
+                                            cmd_id  = duml_pkt['cmd_id'],
+                                            cmd_type= ack_cmd_type,
+                                            payload = ack_payload,
+                                        )
+                                        try:
+                                            ep_in.write(ack)
+                                            ep_in.flush()
+                                            duml_tx_count += 1
+                                        except OSError as exc:
+                                            log.warning("Failed to send DUML response: %s", exc)
 
 
                                 elif port == 0x574A:
@@ -1078,6 +1178,20 @@ class Goggles2Capture:
                                 # The "APP" (0x41 0x50 0x50) payload registers us as the
                                 # DJI Fly app and requests the live view — this is what
                                 # makes the goggles start pushing video on port 0x574A.
+                                # Command B registers us as the phone app. Resending
+                                # it every 5s for the whole session means the goggles
+                                # see an app re-attaching forever, which destabilises
+                                # their own UI. With oneshot_app_register we send it
+                                # only while video is NOT arriving — enough to start
+                                # the stream, and to restart it after a stall, without
+                                # nagging the goggles once it is running.
+                                video_stalled = (
+                                    time.monotonic() - self._last_video_ts
+                                ) > APP_REREGISTER_STALL_SEC
+                                send_b = (not _flags["oneshot_app_register"]) or video_stalled
+                                if not send_b:
+                                    log.debug("skipping app-register keep-alive B "
+                                              "(video flowing, oneshot_app_register on)")
                                 payload_b = bytes.fromhex("17 00 00 23 00 41 50 50 00 00 00 00 00 02")
                                 cmd_b = build_duml_ack(
                                     seq     = seq_counter,
@@ -1089,12 +1203,13 @@ class Goggles2Capture:
                                     payload = payload_b,
                                 )
                                 seq_counter += 1
-                                try:
-                                    ep_in.write(cmd_b)
-                                    ep_in.flush()
-                                    log.info("live-view keep-alive B sent to 0x3C.")
-                                except OSError as exc:
-                                    log.warning("Failed to send keep-alive B: %s", exc)
+                                if send_b:
+                                    try:
+                                        ep_in.write(cmd_b)
+                                        ep_in.flush()
+                                        log.info("live-view keep-alive B sent to 0x3C.")
+                                    except OSError as exc:
+                                        log.warning("Failed to send keep-alive B: %s", exc)
 
                 except OSError as exc:
                     log.warning("Inner stream loop error: %s", exc)
