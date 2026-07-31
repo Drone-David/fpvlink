@@ -679,6 +679,8 @@ _bus.connect("message::error", on_bus_error)
 _bus.connect("message::eos", on_bus_eos)
 _bus.connect("message::warning", on_bus_warning)
 
+CONFIG_SETTLE_SECONDS = 1.5
+
 def config_watch_loop(initial):
     """Restart the pipeline when a graph-affecting config value changes.
 
@@ -690,11 +692,26 @@ def config_watch_loop(initial):
     for a deliberate config change (and a standby-card change happens before
     the drone is live anyway).
     (SRT/RTMP are watched by stream_output.py's own config loop, not this one.)
+
+    Debounced: waits for the config to stop changing for CONFIG_SETTLE_SECONDS
+    before restarting, so clicking through several LUTs in a row (a normal way
+    to compare them) costs one restart, not one per click. Each restart tears
+    down the whole pipeline (mppvideodec, kmssink, fpvlut3d, ...), and that
+    teardown has a known-flaky failure mode under rapid repetition — see the
+    shutdown watchdog around pipeline.set_state(NULL) below, which is the
+    actual safety net if teardown wedges anyway.
     """
+    last = initial
+    changed_at = None
     while True:
-        time.sleep(2.0)
+        time.sleep(0.5)
         current = (load_ndi_config(), load_lut_config(), load_standby_config())
-        if current != initial:
+        if current != last:
+            last = current
+            changed_at = time.monotonic()
+            continue
+        if last != initial and changed_at is not None \
+                and time.monotonic() - changed_at >= CONFIG_SETTLE_SECONDS:
             print("[Pipeline] config changed (NDI/LUT/standby) — restarting to apply", flush=True)
             main_loop.quit()
             return
@@ -732,9 +749,34 @@ if first_boot_start:
         main_loop.quit()
     threading.Thread(target=_warm_restart, daemon=True).start()
 
+SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+def _teardown_with_watchdog(timeout=SHUTDOWN_TIMEOUT_SECONDS):
+    """pipeline.set_state(NULL) can block forever in native GStreamer/mpp/DRM
+    code — this has a documented, not-fully-root-caused flaky teardown under
+    rapid restarts (mpp_frame_deinit invalid NULL pointer warnings in the
+    journal). When it actually wedges instead of just warning, the process
+    never exits, so systemd's Restart=always never fires and the display
+    stays frozen until someone power-cycles the device — reproduced by
+    switching the HDMI LUT several times in quick succession.
+    Run the teardown on its own thread and bound how long we wait for it; if
+    it hasn't finished in time, skip graceful cleanup and force-exit so
+    systemd can respawn a fresh process. A few seconds of blackout beats a
+    manual reboot.
+    """
+    done = threading.Event()
+    def _do_teardown():
+        pipeline.set_state(Gst.State.NULL)
+        done.set()
+    threading.Thread(target=_do_teardown, daemon=True).start()
+    if not done.wait(timeout):
+        print(f"[Pipeline] shutdown hung for {timeout}s (known mpp/DRM teardown "
+              f"flakiness) — forcing exit so systemd can respawn", flush=True)
+        os._exit(1)
+
 try:
     main_loop.run()
 except KeyboardInterrupt:
     print("[Pipeline] Exiting")
 finally:
-    pipeline.set_state(Gst.State.NULL)
+    _teardown_with_watchdog()
