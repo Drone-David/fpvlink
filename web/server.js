@@ -274,11 +274,15 @@ function captureScript(cfg) {
   }
   if (model === 'goggles2' || model === 'goggles3') {
     const scriptPath = path.join(__dirname, '../capture/goggles2.py');
-    const args = ['--teardown', '--setup', '--stream', '--verbose'];
+    // No --verbose: DEBUG level logs every single LogicLink packet, including
+    // every video chunk during a live stream — floods the dashboard's log
+    // console (and the journal) with a firehose that makes it unreadable.
+    // INFO level still logs connection state, DUML RX, and handshake events.
+    const args = ['--teardown', '--setup', '--stream'];
     return { script: scriptPath, args: args };
   }
   // auto: default to goggles2.py since Goggles 2 is most common
-  return { script: path.join(ROOT_DIR, 'capture', 'goggles2.py'), args: ['--teardown', '--setup', '--stream', '--verbose'] };
+  return { script: path.join(ROOT_DIR, 'capture', 'goggles2.py'), args: ['--teardown', '--setup', '--stream'] };
 }
 
 

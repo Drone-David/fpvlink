@@ -48,9 +48,9 @@
       background: rgba(255,255,255,0.08);
       color: #a1a1aa;
     }
-    .preview-badge.ok {
-      background: rgba(0, 212, 255, 0.15);
-      color: #00d4ff;
+    .preview-badge.live {
+      background: var(--err-dim);
+      color: var(--err);
     }
   </style>
 </head>
@@ -394,6 +394,9 @@
     <!-- Standby / Test Card -->
     <div class="form-group">
       <label class="field-label">Standby / Test Card</label>
+      <p style="font-size: 0.78rem; color: var(--muted); margin: -2px 0 4px; line-height: 1.4;">
+        Shown on HDMI whenever there's no live signal. Selecting a card applies immediately (~3s blip) — push Bars or Black to test the downstream chain (converter, cabling, switcher input) before the drone is even on.
+      </p>
       <div id="standbyCardContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px;"></div>
     </div>
 
@@ -585,7 +588,7 @@ function handlePreview(msg) {
   if (el.previewPlaceholder) el.previewPlaceholder.style.display = 'none';
   lastPreviewAt = Date.now();
   el.previewBadge.textContent = 'live';
-  el.previewBadge.classList.add('ok');
+  el.previewBadge.classList.add('live');
 }
 
 // Watchdog: if frames stop arriving, the preview is frozen on its last image —
@@ -597,7 +600,7 @@ setInterval(() => {
   const ageMs = Date.now() - lastPreviewAt;
   if (ageMs > 2000) {
     el.previewBadge.textContent = 'stale';
-    el.previewBadge.classList.remove('ok');
+    el.previewBadge.classList.remove('live');
     el.previewImg.classList.add('stale');
   } else {
     el.previewImg.classList.remove('stale');

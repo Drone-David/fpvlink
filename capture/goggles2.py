@@ -1002,8 +1002,15 @@ class Goggles2Capture:
                                     curr_payload = duml_pkt['payload']
                                     payload_status = "NEW" if prev_payload is None else ("UNCHANGED" if prev_payload == curr_payload else "CHANGED!")
                                     last_payloads[pkt_key] = curr_payload
-                                    
-                                    log.info(
+
+                                    # Most DUML control traffic is repeated telemetry heartbeats
+                                    # (motor/GPS/IMU status polled several times a second) with a
+                                    # payload identical to last time — logging every single one at
+                                    # INFO flooded the dashboard's live log console. Only NEW/CHANGED
+                                    # payloads are worth surfacing by default; repeats still log, just
+                                    # at DEBUG (visible with --verbose for deep troubleshooting).
+                                    log_fn = log.info if payload_status != "UNCHANGED" else log.debug
+                                    log_fn(
                                         "DUML RX  src=%02X dst=%02X seq=%04X "
                                         "cmd_type=%02X cmd_set=%02X cmd_id=%02X  payload(%d)=%s [%s]",
                                         duml_pkt['src_id'], duml_pkt['dst_id'], duml_pkt['seq'],
@@ -1012,7 +1019,7 @@ class Goggles2Capture:
                                     )
 
                                     if duml_pkt['src_id'] in (0x28, 0x3C):
-                                        log.info("DUML response from 0x%02X: payload=%s", duml_pkt['src_id'], curr_payload.hex())
+                                        log_fn("DUML response from 0x%02X: payload=%s", duml_pkt['src_id'], curr_payload.hex())
 
                                     ack_cmd_type = (duml_pkt['cmd_type'] & 0x7F) | 0x80
                                     ack_payload  = b'\x00' + duml_pkt['payload'] if duml_pkt['payload'] else b'\x00'
