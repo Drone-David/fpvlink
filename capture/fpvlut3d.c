@@ -11,10 +11,20 @@
  *
  * What it does
  * ────────────
- * A GstVideoFilter over packed 8-bit RGB-family formats. Loads a .cube file
- * (LUT_3D_SIZE N, then N³ "r g b" triples, red varying fastest) and applies it
- * per pixel with trilinear interpolation, in place. Rows are split across cores
- * with OpenMP so 1080p60 stays real-time on the RK3588's 8 cores.
+ * A GstVideoFilter over NV12 and the packed 8-bit RGB-family formats. Loads a
+ * .cube file (LUT_3D_SIZE N, then N³ "r g b" triples, red varying fastest) and
+ * applies it per pixel in place, with tetrahedral interpolation. Rows are split
+ * across cores with OpenMP so 1080p60 stays real-time on the RK3588's 8 cores.
+ *
+ * Holding 60fps on this SoC took four things, each measured (see the NV12 note
+ * further down for the numbers that motivated them):
+ *   1. NV12 handled natively, so the display branch needs no videoconvert —
+ *      three sequential full-frame passes collapse into this one.
+ *   2. The 8-bit input's normalize→domain-map→scale chain precomputed into
+ *      256-entry per-channel tables, off the hot loop entirely.
+ *   3. Tetrahedral interpolation (4 corner fetches) instead of trilinear (8).
+ *   4. Dynamic OpenMP scheduling, because the RK3588 is big.LITTLE and an
+ *      equal static split leaves the frame waiting on the slow A55 cores.
  *
  * Property
  * ────────
@@ -56,14 +66,41 @@ struct _FpvLut3d
   gfloat  *data;        /* N*N*N*3 floats, red-fastest ordering         */
   gfloat   dmin[3];     /* DOMAIN_MIN (default 0)                       */
   gfloat   dmax[3];     /* DOMAIN_MAX (default 1)                       */
+  /* Per-channel 8-bit → LUT-index lookup, precomputed once per load.
+   * The input is 8-bit, so the whole normalize→domain-map→clamp→scale
+   * chain has only 256 possible outcomes per channel; baking it into these
+   * tables removes 3 divisions + the domain math from every pixel (the hot
+   * loop then only does the trilinear gather). idx[c][v] is the integer
+   * base index (r0/g0/b0) and frc[c][v] the interpolation fraction. */
+  gint    *idx[3];      /* [3][256], heap; NULL until a LUT is loaded   */
+  gfloat  *frc[3];      /* [3][256], heap                               */
   GMutex   lock;        /* guards size/data/domain vs. property set     */
+
+  /* ── NV12 fast path ──────────────────────────────────────────────────
+   * When the negotiated format is NV12 the element does YUV→RGB, the LUT,
+   * and RGB→YUV itself, in one pass, so the display branch needs no
+   * videoconvert at all (see the NV12 note above fpv_lut3d_process_nv12).
+   * All coefficients below are derived from the negotiated colorimetry in
+   * set_info — never hardcoded — so BT.709/BT.601 and limited/full range
+   * all match what videoconvert would have produced. */
+  gboolean is_nv12;
+  gfloat   ytab[256];   /* Y  8-bit → luma, full-range 0-255 float      */
+  gfloat   utab[256];   /* Cb 8-bit → centred, scaled                   */
+  gfloat   vtab[256];   /* Cr 8-bit → centred, scaled                   */
+  gfloat   kr, kg, kb;  /* luma weights                                 */
+  gfloat   cr, cb;      /* R += cr*v ; B += cb*u                        */
+  gfloat   gu, gv;      /* G -= gu*u + gv*v                             */
+  gfloat   iu, iv;      /* RGB→chroma normalisers                       */
+  gfloat   yscale, yoff, cscale;   /* RGB→YUV range compression         */
 };
 
 enum { PROP_0, PROP_FILE };
 
-/* Accept the common packed 8-bit RGB layouts. videoconvert on either side
- * bridges to/from the decoder's NV12 and the display's NV12. */
-#define FPVLUT3D_FORMATS "{ RGBx, BGRx, xRGB, xBGR, RGBA, BGRA, ARGB, ABGR, RGB, BGR }"
+/* NV12 first (preferred): it is what the hardware decoder emits and what the
+ * DRM overlay plane accepts, so negotiating it lets this element sit directly
+ * in the zero-copy display branch with no videoconvert on either side. The
+ * packed 8-bit RGB layouts stay supported for any other use. */
+#define FPVLUT3D_FORMATS "{ NV12, RGBx, BGRx, xRGB, xBGR, RGBA, BGRA, ARGB, ABGR, RGB, BGR }"
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK, GST_PAD_ALWAYS,
@@ -83,6 +120,10 @@ fpv_lut3d_load (FpvLut3d * self, const gchar * path)
 {
   g_mutex_lock (&self->lock);
   g_clear_pointer (&self->data, g_free);
+  for (gint c = 0; c < 3; c++) {
+    g_clear_pointer (&self->idx[c], g_free);
+    g_clear_pointer (&self->frc[c], g_free);
+  }
   self->size = 0;
   self->dmin[0] = self->dmin[1] = self->dmin[2] = 0.0f;
   self->dmax[0] = self->dmax[1] = self->dmax[2] = 1.0f;
@@ -157,49 +198,239 @@ fpv_lut3d_load (FpvLut3d * self, const gchar * path)
     return;
   }
 
+  /* Bake the per-channel 8-bit → (index, fraction) tables. Same math the hot
+   * loop used to do per pixel, evaluated here once for each of the 256 input
+   * values per channel. */
+  gint *idx[3]; gfloat *frc[3];
+  const gfloat scale = (gfloat) (n - 1);
+  for (gint c = 0; c < 3; c++) {
+    idx[c] = g_malloc (256 * sizeof (gint));
+    frc[c] = g_malloc (256 * sizeof (gfloat));
+    gfloat span = dmax[c] - dmin[c];
+    gfloat inv = span != 0.f ? 1.f / span : 1.f;
+    for (gint v = 0; v < 256; v++) {
+      gfloat t = CLAMP ((((gfloat) v / 255.f) - dmin[c]) * inv, 0.f, 1.f) * scale;
+      gint i = (gint) t;
+      if (i > n - 1) i = n - 1;         /* guard the t == n-1 exact case */
+      idx[c][v] = i;
+      frc[c][v] = t - i;
+    }
+  }
+
   g_mutex_lock (&self->lock);
   self->data = data;
   self->size = n;
   memcpy (self->dmin, dmin, sizeof (dmin));
   memcpy (self->dmax, dmax, sizeof (dmax));
+  for (gint c = 0; c < 3; c++) { self->idx[c] = idx[c]; self->frc[c] = frc[c]; }
   g_mutex_unlock (&self->lock);
   GST_INFO_OBJECT (self, "loaded %dx%dx%d LUT from '%s'", n, n, n, path);
 }
 
-/* Trilinear sample. rf/gf/bf are normalized [0,1] (already domain-mapped).
- * out[0..2] receive interpolated normalized RGB. */
-static inline void
-fpv_lut3d_sample (const gfloat * lut, gint n, gfloat rf, gfloat gf, gfloat bf,
-    gfloat * out)
+/* ── colour-space setup ────────────────────────────────────────────────────
+ * Called on every caps negotiation. Records whether we're on the NV12 fast
+ * path and, if so, bakes the YUV↔RGB coefficients for the *negotiated*
+ * colorimetry (matrix + range) so the result matches what videoconvert would
+ * have produced for the same caps. */
+static gboolean
+fpv_lut3d_set_info (GstVideoFilter * filter, GstCaps * incaps,
+    GstVideoInfo * in_info, GstCaps * outcaps, GstVideoInfo * out_info)
 {
-  const gfloat scale = (gfloat) (n - 1);
-  gfloat fr = CLAMP (rf, 0.f, 1.f) * scale;
-  gfloat fg = CLAMP (gf, 0.f, 1.f) * scale;
-  gfloat fb = CLAMP (bf, 0.f, 1.f) * scale;
+  FpvLut3d *self = FPV_LUT3D (filter);
 
-  gint r0 = (gint) fr, g0 = (gint) fg, b0 = (gint) fb;
+  self->is_nv12 = (GST_VIDEO_INFO_FORMAT (in_info) == GST_VIDEO_FORMAT_NV12);
+  if (!self->is_nv12)
+    return TRUE;                /* packed-RGB path needs no coefficients */
+
+  /* Luma weights from the negotiated matrix (BT.601 for SD-style caps,
+   * BT.709 otherwise — the same default videoconvert applies). */
+  gfloat kr, kb;
+  switch (in_info->colorimetry.matrix) {
+    case GST_VIDEO_COLOR_MATRIX_BT601:
+      kr = 0.299f; kb = 0.114f; break;
+    case GST_VIDEO_COLOR_MATRIX_BT2020:
+      kr = 0.2627f; kb = 0.0593f; break;
+    case GST_VIDEO_COLOR_MATRIX_BT709:
+    default:
+      kr = 0.2126f; kb = 0.0722f; break;
+  }
+  gfloat kg = 1.0f - kr - kb;
+  self->kr = kr; self->kg = kg; self->kb = kb;
+
+  /* Decode (YUV→RGB) and encode (RGB→YUV) constants. */
+  self->cr = 2.0f * (1.0f - kr);
+  self->cb = 2.0f * (1.0f - kb);
+  self->gu = 2.0f * kb * (1.0f - kb) / kg;
+  self->gv = 2.0f * kr * (1.0f - kr) / kg;
+  self->iu = 1.0f / (2.0f * (1.0f - kb));
+  self->iv = 1.0f / (2.0f * (1.0f - kr));
+
+  /* Range: limited (16-235 luma / 16-240 chroma) unless caps say full. */
+  gboolean full = (in_info->colorimetry.range == GST_VIDEO_COLOR_RANGE_0_255);
+  gfloat ydec = full ? 1.0f : 255.0f / 219.0f;
+  gfloat yzero = full ? 0.0f : 16.0f;
+  gfloat cdec = full ? 1.0f : 255.0f / 224.0f;
+  for (gint i = 0; i < 256; i++) {
+    self->ytab[i] = ((gfloat) i - yzero) * ydec;
+    self->utab[i] = ((gfloat) i - 128.0f) * cdec;
+    self->vtab[i] = ((gfloat) i - 128.0f) * cdec;
+  }
+  self->yscale = full ? 1.0f : 219.0f / 255.0f;
+  self->yoff   = full ? 0.0f : 16.0f;
+  self->cscale = full ? 1.0f : 224.0f / 255.0f;
+
+  GST_INFO_OBJECT (self, "NV12 fast path: matrix=%d range=%s (kr=%.4f kb=%.4f)",
+      in_info->colorimetry.matrix, full ? "full" : "limited", kr, kb);
+  return TRUE;
+}
+
+/* Round-and-clamp a 0-255 float to a byte. */
+static inline guint8
+fpv_f2b (gfloat v)
+{
+  return (guint8) CLAMP (v + 0.5f, 0.f, 255.f);
+}
+
+/* Trilinear sample. r0/g0/b0 are the integer base indices and dr/dg/db the
+ * interpolation fractions — both precomputed from the 8-bit input via the
+ * per-channel tables (see fpv_lut3d_load). out[0..2] receive interpolated
+ * normalized RGB. */
+static inline void
+fpv_lut3d_sample (const gfloat * lut, gint n, gint r0, gfloat dr,
+    gint g0, gfloat dg, gint b0, gfloat db, gfloat * out)
+{
   gint r1 = MIN (r0 + 1, n - 1), g1 = MIN (g0 + 1, n - 1), b1 = MIN (b0 + 1, n - 1);
-  gfloat dr = fr - r0, dg = fg - g0, db = fb - b0;
 
 #define IDX(ri, gi, bi) ((((bi) * n + (gi)) * n + (ri)) * 3)
   const gfloat *c000 = lut + IDX (r0, g0, b0);
-  const gfloat *c100 = lut + IDX (r1, g0, b0);
-  const gfloat *c010 = lut + IDX (r0, g1, b0);
-  const gfloat *c110 = lut + IDX (r1, g1, b0);
-  const gfloat *c001 = lut + IDX (r0, g0, b1);
-  const gfloat *c101 = lut + IDX (r1, g0, b1);
-  const gfloat *c011 = lut + IDX (r0, g1, b1);
   const gfloat *c111 = lut + IDX (r1, g1, b1);
+  const gfloat *ca, *cb2;
+  gfloat wa, wb, wc;
+#define TETRA(A, B, WA, WB, WC) \
+  do { ca = lut + IDX A; cb2 = lut + IDX B; wa = WA; wb = WB; wc = WC; } while (0)
+
+  /* Tetrahedral interpolation: the cell is split into 6 tetrahedra and only
+   * the 4 corners of the one containing (dr,dg,db) are read — half the
+   * gathers of trilinear, which is what buys the frame budget here. It is
+   * also the interpolation professional LUT tooling (OCIO, Resolve, ffmpeg's
+   * lut3d) uses by default, so the grade matches what the .cube was authored
+   * against. The ordering of dr/dg/db picks the tetrahedron. */
+  if (dr > dg) {
+    if (dg > db)                /* r > g > b */
+      TETRA ((r1, g0, b0), (r1, g1, b0), dr, dg, db);
+    else if (dr > db)           /* r > b > g */
+      TETRA ((r1, g0, b0), (r1, g0, b1), dr, db, dg);
+    else                        /* b > r > g */
+      TETRA ((r0, g0, b1), (r1, g0, b1), db, dr, dg);
+  } else {
+    if (db > dg)                /* b > g > r */
+      TETRA ((r0, g0, b1), (r0, g1, b1), db, dg, dr);
+    else if (db > dr)           /* g > b > r */
+      TETRA ((r0, g1, b0), (r0, g1, b1), dg, db, dr);
+    else                        /* g > r > b */
+      TETRA ((r0, g1, b0), (r1, g1, b0), dg, dr, db);
+  }
+#undef TETRA
 #undef IDX
 
+  /* out = c000 + wa*(ca-c000) + wb*(cb2-ca) + wc*(c111-cb2) */
   for (gint k = 0; k < 3; k++) {
-    gfloat x00 = c000[k] + dr * (c100[k] - c000[k]);
-    gfloat x10 = c010[k] + dr * (c110[k] - c010[k]);
-    gfloat x01 = c001[k] + dr * (c101[k] - c001[k]);
-    gfloat x11 = c011[k] + dr * (c111[k] - c011[k]);
-    gfloat y0 = x00 + dg * (x10 - x00);
-    gfloat y1 = x01 + dg * (x11 - x01);
-    out[k] = y0 + db * (y1 - y0);
+    out[k] = c000[k]
+        + wa * (ca[k] - c000[k])
+        + wb * (cb2[k] - ca[k])
+        + wc * (c111[k] - cb2[k]);
+  }
+}
+
+/* ── NV12 in-place grade ───────────────────────────────────────────────────
+ * Why this exists: the display branch is NV12 end to end (hardware decoder →
+ * DRM overlay plane 194). Bracketing an RGB-only LUT with videoconvert cost
+ * three sequential full-frame passes — and videoconvert is single-threaded,
+ * so those two passes alone exceeded the 16.7 ms frame budget and stalled the
+ * display. Doing YUV→RGB, the LUT, and RGB→YUV inline here collapses all
+ * three into the one already-parallel loop.
+ *
+ * Both quantisation steps below are deliberate, not sloppy: the old path
+ * wrote 8-bit RGB out of videoconvert and again out of the LUT, so rounding
+ * at exactly those two points is what keeps the output identical to it.
+ *
+ * Chroma is 4:2:0 — one UV pair per 2x2 luma block — so each block is graded
+ * as four pixels sharing that pair, and the four resulting chromas are
+ * averaged back into it. */
+static void
+fpv_lut3d_process_nv12 (FpvLut3d * self, GstVideoFrame * frame,
+    const gfloat * lut, gint n)
+{
+  const gint width = GST_VIDEO_FRAME_WIDTH (frame);
+  const gint height = GST_VIDEO_FRAME_HEIGHT (frame);
+  const gint ystride = GST_VIDEO_FRAME_PLANE_STRIDE (frame, 0);
+  const gint cstride = GST_VIDEO_FRAME_PLANE_STRIDE (frame, 1);
+  guint8 *ybase = GST_VIDEO_FRAME_PLANE_DATA (frame, 0);
+  guint8 *cbase = GST_VIDEO_FRAME_PLANE_DATA (frame, 1);
+
+  const gfloat *ytab = self->ytab, *utab = self->utab, *vtab = self->vtab;
+  const gint *idxR = self->idx[0], *idxG = self->idx[1], *idxB = self->idx[2];
+  const gfloat *frcR = self->frc[0], *frcG = self->frc[1], *frcB = self->frc[2];
+  const gfloat kr = self->kr, kg = self->kg, kb = self->kb;
+  const gfloat crr = self->cr, cbb = self->cb, gu = self->gu, gv = self->gv;
+  const gfloat iu = self->iu, iv = self->iv;
+  const gfloat yscale = self->yscale, yoff = self->yoff, cscale = self->cscale;
+
+  /* Round up so odd sizes still cover the last row/column (indices clamp). */
+  const gint bh = (height + 1) / 2, bw = (width + 1) / 2;
+
+  /* Dynamic, not static: the RK3588 is big.LITTLE (4x A76 @2.26GHz + 4x A55
+   * @1.8GHz). An equal static split makes the A55 threads stragglers and the
+   * whole frame waits on them; dynamic chunks let the A76s absorb the slack.
+   * A chunk of 8 block-rows keeps scheduling overhead negligible. */
+#ifdef _OPENMP
+#pragma omp parallel for schedule (dynamic, 8)
+#endif
+  for (gint by = 0; by < bh; by++) {
+    const gint y0 = by * 2, y1 = MIN (y0 + 1, height - 1);
+    guint8 *row0 = ybase + (gsize) y0 * ystride;
+    guint8 *row1 = ybase + (gsize) y1 * ystride;
+    guint8 *crow = cbase + (gsize) by * cstride;
+
+    for (gint bx = 0; bx < bw; bx++) {
+      const gint x0 = bx * 2, x1 = MIN (x0 + 1, width - 1);
+      const gfloat u = utab[crow[bx * 2 + 0]];
+      const gfloat v = vtab[crow[bx * 2 + 1]];
+      /* Chroma-derived terms are shared by all four pixels in the block. */
+      const gfloat rv = crr * v, bu = cbb * u, guv = gu * u + gv * v;
+
+      guint8 *yp[4] = { row0 + x0, row0 + x1, row1 + x0, row1 + x1 };
+      /* Snapshot the four luma samples before writing any of them: on an odd
+       * width or height the clamps above make x1==x0 / y1==y0, so two of these
+       * pointers alias, and grading in place would grade that edge pixel twice. */
+      const guint8 ysrc[4] = { *yp[0], *yp[1], *yp[2], *yp[3] };
+      gfloat su = 0.f, sv = 0.f;
+
+      for (gint i = 0; i < 4; i++) {
+        const gfloat yy = ytab[ysrc[i]];
+        /* YUV → RGB, quantised to 8-bit exactly as videoconvert did. */
+        const guint8 r8 = fpv_f2b (yy + rv);
+        const guint8 g8 = fpv_f2b (yy - guv);
+        const guint8 b8 = fpv_f2b (yy + bu);
+
+        gfloat out[3];
+        fpv_lut3d_sample (lut, n, idxR[r8], frcR[r8], idxG[g8], frcG[g8],
+            idxB[b8], frcB[b8], out);
+
+        /* Second quantisation point — matches the old 8-bit LUT output. */
+        const gfloat R = fpv_f2b (out[0] * 255.f);
+        const gfloat G = fpv_f2b (out[1] * 255.f);
+        const gfloat B = fpv_f2b (out[2] * 255.f);
+
+        const gfloat Yl = kr * R + kg * G + kb * B;
+        *yp[i] = fpv_f2b (Yl * yscale + yoff);
+        su += (B - Yl);
+        sv += (R - Yl);
+      }
+
+      crow[bx * 2 + 0] = fpv_f2b (su * 0.25f * iu * cscale + 128.f);
+      crow[bx * 2 + 1] = fpv_f2b (sv * 0.25f * iv * cscale + 128.f);
+    }
   }
 }
 
@@ -210,15 +441,18 @@ fpv_lut3d_transform_frame_ip (GstVideoFilter * filter, GstVideoFrame * frame)
 
   g_mutex_lock (&self->lock);
   gint n = self->size;
-  gfloat *lut = self->data;
-  gfloat dmin0 = self->dmin[0], dmin1 = self->dmin[1], dmin2 = self->dmin[2];
-  gfloat dspan0 = self->dmax[0] - dmin0;
-  gfloat dspan1 = self->dmax[1] - dmin1;
-  gfloat dspan2 = self->dmax[2] - dmin2;
+  const gfloat *lut = self->data;
+  const gint *idxR = self->idx[0], *idxG = self->idx[1], *idxB = self->idx[2];
+  const gfloat *frcR = self->frc[0], *frcG = self->frc[1], *frcB = self->frc[2];
   g_mutex_unlock (&self->lock);
 
   if (!lut || n < 2)
     return GST_FLOW_OK;         /* passthrough */
+
+  if (self->is_nv12) {
+    fpv_lut3d_process_nv12 (self, frame, lut, n);
+    return GST_FLOW_OK;
+  }
 
   const gint width = GST_VIDEO_FRAME_WIDTH (frame);
   const gint height = GST_VIDEO_FRAME_HEIGHT (frame);
@@ -232,10 +466,6 @@ fpv_lut3d_transform_frame_ip (GstVideoFilter * filter, GstVideoFrame * frame)
   const gint bo = GST_VIDEO_FRAME_COMP_POFFSET (frame, 2);
   const gint ps = GST_VIDEO_FRAME_COMP_PSTRIDE (frame, 0);
 
-  const gfloat inv0 = dspan0 != 0.f ? 1.f / dspan0 : 1.f;
-  const gfloat inv1 = dspan1 != 0.f ? 1.f / dspan1 : 1.f;
-  const gfloat inv2 = dspan2 != 0.f ? 1.f / dspan2 : 1.f;
-
 #ifdef _OPENMP
 #pragma omp parallel for schedule (static)
 #endif
@@ -243,12 +473,11 @@ fpv_lut3d_transform_frame_ip (GstVideoFilter * filter, GstVideoFrame * frame)
     guint8 *row = base + (gsize) y * stride;
     for (gint x = 0; x < width; x++) {
       guint8 *px = row + (gsize) x * ps;
-      gfloat rf = ((px[ro] / 255.f) - dmin0) * inv0;
-      gfloat gf = ((px[go] / 255.f) - dmin1) * inv1;
-      gfloat bf = ((px[bo] / 255.f) - dmin2) * inv2;
+      guint8 rv = px[ro], gv = px[go], bv = px[bo];
 
       gfloat out[3];
-      fpv_lut3d_sample (lut, n, rf, gf, bf, out);
+      fpv_lut3d_sample (lut, n, idxR[rv], frcR[rv], idxG[gv], frcG[gv],
+          idxB[bv], frcB[bv], out);
 
       px[ro] = (guint8) CLAMP (out[0] * 255.f + 0.5f, 0.f, 255.f);
       px[go] = (guint8) CLAMP (out[1] * 255.f + 0.5f, 0.f, 255.f);
@@ -295,6 +524,7 @@ fpv_lut3d_finalize (GObject * obj)
   FpvLut3d *self = FPV_LUT3D (obj);
   g_free (self->file);
   g_free (self->data);
+  for (gint c = 0; c < 3; c++) { g_free (self->idx[c]); g_free (self->frc[c]); }
   g_mutex_clear (&self->lock);
   G_OBJECT_CLASS (fpv_lut3d_parent_class)->finalize (obj);
 }
@@ -329,6 +559,7 @@ fpv_lut3d_class_init (FpvLut3dClass * klass)
   gst_element_class_add_static_pad_template (element_class, &sink_template);
   gst_element_class_add_static_pad_template (element_class, &src_template);
 
+  vfilter_class->set_info = fpv_lut3d_set_info;
   vfilter_class->transform_frame_ip = fpv_lut3d_transform_frame_ip;
 }
 

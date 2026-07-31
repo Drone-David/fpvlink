@@ -119,8 +119,12 @@ def build_lut_segment(enabled, active_id):
     picture, never a failed parse_launch (which would black out HDMI):
       • fpvlut3d not registered  → skip (log error), display stays live
       • active LUT file absent    → skip (log error), display stays live
-    videoconvert brackets the LUT so it sees packed RGB, then hands NV12 back to
-    the NV12 overlay plane.
+    No videoconvert on either side: fpvlut3d grades NV12 natively, so the LUT
+    drops straight into the zero-copy decoder→plane-194 path. It used to be
+    bracketed by `videoconvert ! … ! videoconvert`, which is what caused the
+    CPU runaway that froze the display — videoconvert is single-threaded, and
+    those two extra full-frame passes alone exceeded the 16.67ms frame budget
+    before the LUT itself ran. Don't put them back.
     """
     if not (enabled and active_id):
         return ""
@@ -135,13 +139,11 @@ def build_lut_segment(enabled, active_id):
     # Escape for the parse-launch string (paths are server-generated: lut_<ts>_<rnd>).
     safe = lut_file.replace("\\", "\\\\").replace('"', '\\"')
     print(f"[Pipeline] HDMI 3D LUT ENABLED: {lut_file}", flush=True)
-    # No fixed width/height here (was a hardcoded 1920x1080 assertion — same bug
-    # as the main decode caps: any non-16:9 source would fail negotiation right
-    # here and crash the pipeline, bypassing the render-rectangle fix entirely).
-    return (
-        f'! videoconvert ! fpvlut3d file="{safe}" '
-        f'! videoconvert ! video/x-raw,format=NV12 '
-    )
+    # No caps filter here at all: the element is in-place and NV12-native, so it
+    # neither changes nor needs to assert format/resolution. (An earlier version
+    # asserted a hardcoded 1920x1080 here and crashed the pipeline on any
+    # non-16:9 source, bypassing the render-rectangle fix entirely.)
+    return f'! fpvlut3d file="{safe}" '
 
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
 KMS_CONNECTOR_ID = 217
