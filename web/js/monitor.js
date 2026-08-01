@@ -318,9 +318,14 @@ function renderHealth(s) {
     $('healthTempVal').textContent = `${temp} °C`;
     const fill = $('healthTempFill');
     fill.style.width = `${Math.min(100, Math.max(0, temp))}%`;
-    // Bands are the meter's own; the banner keys off thermal_state so the two
-    // never disagree about whether the box is actually in trouble.
-    fill.style.background = temp > 82 ? 'var(--err)' : temp > 65 ? 'var(--warn)' : 'var(--ok)';
+    // Color from thermal_state, not raw temp: it's the same enum the banner and
+    // the chain's Pipeline node already key off (server.js, WARN at 80°C /
+    // CRITICAL at 85°C, with hysteresis so it doesn't flicker at the boundary).
+    // A meter with its own raw-temp bands drifted out of sync with the rest of
+    // the page — same trap the storage meter below already avoids by using
+    // storage_state instead of a raw-GB comparison.
+    fill.style.background = s.thermal_state === 'CRITICAL'
+      ? 'var(--err)' : s.thermal_state === 'WARN' ? 'var(--warn)' : 'var(--ok)';
   } else {
     $('healthTempVal').textContent = '—';
     $('healthTempFill').style.width = '0';
