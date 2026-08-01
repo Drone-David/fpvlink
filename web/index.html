@@ -2,1228 +2,475 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FPVLink — Streaming Dashboard</title>
-  <meta name="description" content="FPVLink low-latency FPV drone streaming device dashboard. Configure SRT/RTMP streams, monitor live stats, and control your pipeline." />
-  <meta name="theme-color" content="#0a0a0f" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>FPVLink — Flight Deck</title>
+  <meta name="description" content="FPVLink low-latency FPV streaming device dashboard. Monitor the signal chain, configure SRT/RTMP/NDI outputs, and control the pipeline." />
+  <meta name="theme-color" content="#0c0e12" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="stylesheet" href="styles.css" />
-  <style>
-    .preview-wrap {
-      position: relative;
-      width: 100%;
-      aspect-ratio: 16 / 9;
-      background: #000;
-      border-radius: 8px;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .preview-img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      display: none;
-      transition: opacity 0.3s ease;
-    }
-    .preview-img.has-frame { display: block; }
-    .preview-img.stale { opacity: 0.45; filter: grayscale(0.6); }
-    .preview-placeholder {
-      position: absolute;
-      color: #71717a;
-      font-size: 0.85rem;
-      letter-spacing: 0.02em;
-    }
-    .preview-badge {
-      margin-left: auto;
-      font-size: 0.68rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.08);
-      color: #a1a1aa;
-    }
-    .preview-badge.live {
-      background: var(--err-dim);
-      color: var(--err);
-    }
-  </style>
 </head>
 <body>
 
-<div class="page-wrap">
+<div class="app">
 
   <!-- ══════════════════════════════════════
        HEADER
   ══════════════════════════════════════ -->
-  <header class="site-header" role="banner">
-    <div class="logo-wrap">
-      <!-- SVG logo: drone + signal waves -->
-      <svg class="logo-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <defs>
-          <linearGradient id="logoGrad" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stop-color="#00d4ff"/>
-            <stop offset="100%" stop-color="#a78bfa"/>
-          </linearGradient>
-          <filter id="logoGlow">
-            <feGaussianBlur stdDeviation="1.5" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
-        <!-- Drone body -->
-        <rect x="15" y="17" width="10" height="7" rx="2" fill="url(#logoGrad)" filter="url(#logoGlow)"/>
-        <!-- Rotor arms -->
-        <line x1="15" y1="18" x2="7"  y2="13" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
-        <line x1="25" y1="18" x2="33" y2="13" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
-        <line x1="15" y1="23" x2="7"  y2="28" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
-        <line x1="25" y1="23" x2="33" y2="28" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
-        <!-- Rotor circles -->
-        <circle cx="6"  cy="12" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
-        <circle cx="34" cy="12" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
-        <circle cx="6"  cy="29" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
-        <circle cx="34" cy="29" r="3.5" stroke="url(#logoGrad)" stroke-width="1.2" fill="none"/>
-        <!-- Signal arc top-right -->
-        <path d="M28 9 A8 8 0 0 1 36 17" stroke="#00d4ff" stroke-width="1.2" fill="none" stroke-linecap="round" opacity="0.7"/>
-        <path d="M30 6 A12 12 0 0 1 39 18" stroke="#00d4ff" stroke-width="1" fill="none" stroke-linecap="round" opacity="0.4"/>
-      </svg>
-      <div class="logo-text">
-        <span class="logo-title">FPVLink</span>
-        <span class="logo-sub">Low-Latency Streaming</span>
-      </div>
-    </div>
-    <div class="header-meta">
-      <span class="device-name" id="deviceName">—</span>
-      <span class="firmware-version" id="firmwareVersion">v—</span>
-    </div>
+  <header class="hdr">
+    <!-- The original drone-and-signal mark, flattened: the gradient fill and
+         the Gaussian glow filter are gone, it renders in one colour. -->
+    <svg class="hdr-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect x="15" y="17" width="10" height="7" rx="2" fill="currentColor"/>
+      <line x1="15" y1="18" x2="7"  y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="25" y1="18" x2="33" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="15" y1="23" x2="7"  y2="28" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="25" y1="23" x2="33" y2="28" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="6"  cy="12" r="3.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
+      <circle cx="34" cy="12" r="3.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
+      <circle cx="6"  cy="29" r="3.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
+      <circle cx="34" cy="29" r="3.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
+      <path d="M28 9 A8 8 0 0 1 36 17" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" opacity="0.7"/>
+      <path d="M30 6 A12 12 0 0 1 39 18" stroke="currentColor" stroke-width="1" fill="none" stroke-linecap="round" opacity="0.4"/>
+    </svg>
+    <span class="hdr-wordmark">FPVLink</span>
+    <span class="hdr-div" aria-hidden="true"></span>
+    <span class="hdr-device" id="hdrDevice">—</span>
+
+    <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+      <button class="tab" role="tab" id="tab-monitor" aria-controls="view-monitor" aria-selected="true"  data-tab="monitor">Monitor</button>
+      <button class="tab" role="tab" id="tab-outputs" aria-controls="view-outputs" aria-selected="false" data-tab="outputs">Outputs</button>
+      <button class="tab" role="tab" id="tab-logs"    aria-controls="view-logs"    aria-selected="false" data-tab="logs">Logs</button>
+      <button class="tab" role="tab" id="tab-system"  aria-controls="view-system"  aria-selected="false" data-tab="system">System</button>
+    </nav>
   </header>
 
-  <!-- ══════════════════════════════════════
-       OFFLINE BANNER
-  ══════════════════════════════════════ -->
-  <div class="offline-banner" id="offlineBanner" role="alert" aria-live="polite">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M8 1L1 14h14L8 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-      <line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-      <circle cx="8" cy="12.5" r="0.75" fill="currentColor"/>
-    </svg>
-    WebSocket disconnected — retrying connection…
-  </div>
+  <main class="main">
 
-  <!-- ══════════════════════════════════════
-       CRITICAL BANNER
-  ══════════════════════════════════════ -->
-  <div class="critical-banner" id="criticalBanner" role="alert" aria-live="assertive">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-      <line x1="12" y1="9" x2="12" y2="13"/>
-      <line x1="12" y1="17" x2="12.01" y2="17"/>
-    </svg>
-    <span id="criticalBannerText">CRITICAL WARNING</span>
-  </div>
-
-  <!-- ══════════════════════════════════════
-       STATUS BAR
-  ══════════════════════════════════════ -->
-  <div class="status-bar" role="status" aria-label="System status indicators">
-    <div class="status-item" id="usbLink" title="USB gadget enumerated">
-      <span class="dot"></span>
-      <span>LINK</span>
-    </div>
-    <div class="status-item" id="usbData" title="Bytes arriving on the bulk endpoint">
-      <span class="dot"></span>
-      <span>DATA</span>
-    </div>
-    <div class="status-item" id="usbStream" title="Valid H.264 video confirmed">
-      <span class="dot"></span>
-      <span>STREAM</span>
-    </div>
-    <div class="status-item" id="pipelineStatus">
-      <span class="dot"></span>
-      <span>Pipeline</span>
-    </div>
-    <div class="status-item" id="networkStatus">
-      <span class="dot"></span>
-      <span>Stream Live</span>
-    </div>
-    <div class="uptime-badge" id="uptimeBadge" title="Stream uptime" aria-label="Uptime">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-        <circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.2"/>
-        <path d="M5 2.5V5l1.5 1" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-      </svg>
-      <span id="uptimeText">00:00:00</span>
-    </div>
-  </div>
-
-  <!-- ══════════════════════════════════════
-       STATS ROW
-  ══════════════════════════════════════ -->
-  <div class="stats-row" role="region" aria-label="Live stream statistics">
-
-    <div class="stat-card">
-      <span class="stat-label">Frame Rate</span>
-      <span class="stat-value" id="statFps">0</span>
-      <span class="stat-unit">FPS</span>
+    <!-- ══════════════════════════════════════
+         CONDITION BANNER — one slot, highest severity only
+    ══════════════════════════════════════ -->
+    <div class="banner" id="banner" role="alert" aria-live="assertive" hidden>
+      <span class="banner-dot" aria-hidden="true"></span>
+      <span class="banner-text" id="bannerText"></span>
+      <span class="banner-hint" id="bannerHint"></span>
     </div>
 
-    <div class="stat-card">
-      <span class="stat-label">Bitrate</span>
-      <span class="stat-value" id="statBitrate">0.0</span>
-      <span class="stat-unit">Mbps</span>
-    </div>
+    <!-- ══════════════════════════════════════
+         MONITOR
+    ══════════════════════════════════════ -->
+    <section class="view" id="view-monitor" role="tabpanel" aria-labelledby="tab-monitor" tabindex="0">
+      <div class="mon">
 
-    <div class="stat-card">
-      <span class="stat-label">Latency</span>
-      <span class="stat-value" id="statLatency">—</span>
-      <span class="stat-unit">ms</span>
-    </div>
+        <div class="mon-left">
 
-    <div class="stat-card">
-      <span class="stat-label">Resolution</span>
-      <span class="stat-value" id="statResolution" style="font-size:1.4rem">—</span>
-      <span class="stat-unit">px</span>
-    </div>
+          <!-- Preview + HUD -->
+          <div class="preview">
+            <img id="previewImg" class="preview-img" alt="Live confidence preview of the HDMI output" />
+            <div class="preview-empty" id="previewEmpty">
+              <span class="preview-empty-title">No preview signal yet</span>
+              <span class="preview-empty-sub">waiting for frames from the pipeline</span>
+            </div>
 
-    <div class="stat-card" id="cardDropped">
-      <span class="stat-label">Dropped</span>
-      <span class="stat-value" id="statDropped">0</span>
-      <span class="stat-unit">frames</span>
-    </div>
+            <div class="state-badge is-nosignal" id="stateBadge" aria-live="polite">
+              <span class="state-badge-dot" aria-hidden="true"></span>
+              <span class="state-badge-word" id="stateWord">NO SIGNAL</span>
+              <span class="state-badge-clock" id="stateClock">00:00:00</span>
+            </div>
 
-    <div class="stat-card">
-      <span class="stat-label">Received</span>
-      <span class="stat-value" id="statBytes">0</span>
-      <span class="stat-unit" id="statBytesUnit">MB</span>
-    </div>
+            <div class="hud">
+              <div class="hud-metric">
+                <div class="hud-label">Frame rate</div>
+                <div class="hud-value"><span id="hudFps">—</span><span class="hud-unit">fps</span></div>
+              </div>
+              <div class="hud-metric">
+                <div class="hud-label">Bitrate</div>
+                <div class="hud-value"><span id="hudBitrate">0.0</span><span class="hud-unit">Mbps</span></div>
+              </div>
+              <!-- Labelled by what it actually measures: FPVLink's own
+                   ingest→HDMI delay, not glass-to-glass. -->
+              <div class="hud-metric is-secondary">
+                <div class="hud-label">Ingest &rarr; HDMI</div>
+                <div class="hud-value"><span id="hudLatency">—</span><span class="hud-unit">ms</span></div>
+              </div>
+              <div class="hud-aside">
+                <div><span id="hudFrameAge">frame age —</span></div>
+                <div><span id="hudPacing">pacing p95 —</span></div>
+              </div>
+            </div>
+          </div>
 
-    <div class="stat-card" id="cardFrameGap">
-      <span class="stat-label">Frame Pacing</span>
-      <span class="stat-value" id="statFrameGapP95">—</span>
-      <span class="stat-unit">ms p95 &middot; <span id="statFrameGapMean">—</span> ms mean</span>
-    </div>
+          <!-- Signal chain -->
+          <div class="card">
+            <div class="card-hd">
+              <span class="card-label">Signal chain</span>
+              <span class="chain-verdict is-off" id="chainVerdict">offline</span>
+            </div>
+            <div class="chain" id="chain">
+              <div class="chain-node is-off" data-node="goggles">
+                <span class="chain-dot" aria-hidden="true"></span>
+                <span class="chain-name">Goggles</span>
+                <span class="chain-detail">—</span>
+              </div>
+              <div class="chain-link is-off"></div>
+              <div class="chain-node is-off" data-node="bulk">
+                <span class="chain-dot" aria-hidden="true"></span>
+                <span class="chain-name">Bulk data</span>
+                <span class="chain-detail">—</span>
+              </div>
+              <div class="chain-link is-off"></div>
+              <div class="chain-node is-off" data-node="h264">
+                <span class="chain-dot" aria-hidden="true"></span>
+                <span class="chain-name">H.264</span>
+                <span class="chain-detail">—</span>
+              </div>
+              <div class="chain-link is-off"></div>
+              <div class="chain-node is-off" data-node="pipeline">
+                <span class="chain-dot" aria-hidden="true"></span>
+                <span class="chain-name">Pipeline</span>
+                <span class="chain-detail">—</span>
+              </div>
+              <div class="chain-link is-off"></div>
+              <div class="chain-node is-off" data-node="outputs">
+                <span class="chain-dot" aria-hidden="true"></span>
+                <span class="chain-name">Outputs</span>
+                <span class="chain-detail">—</span>
+              </div>
+            </div>
+          </div>
 
-    <div class="stat-card" id="cardTemp">
-      <span class="stat-label">SOC Temp</span>
-      <span class="stat-value" id="statTemp">—</span>
-      <span class="stat-unit">°C</span>
-    </div>
+          <!-- Traces -->
+          <div class="traces">
+            <div class="card trace">
+              <div class="trace-hd">
+                <span class="trace-title">Bitrate &middot; 60s</span>
+                <span class="trace-now" id="traceBitrateNow">—</span>
+              </div>
+              <svg class="trace-svg" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true">
+                <polyline id="traceBitrate" fill="none" stroke-width="1.6" stroke-linejoin="round" points="" />
+              </svg>
+            </div>
+            <div class="card trace">
+              <div class="trace-hd">
+                <span class="trace-title">Pacing p95 &middot; 60s</span>
+                <span class="trace-now" id="tracePacingNow">—</span>
+              </div>
+              <svg class="trace-svg" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true">
+                <polyline id="tracePacing" fill="none" stroke-width="1.6" stroke-linejoin="round" points="" />
+              </svg>
+            </div>
+            <div class="card trace">
+              <div class="trace-hd">
+                <span class="trace-title">Dropped &middot; 60s</span>
+                <span class="trace-now" id="traceDroppedNow">0</span>
+              </div>
+              <svg class="trace-svg" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true">
+                <polyline id="traceDropped" fill="none" stroke-width="1.6" stroke-linejoin="round" points="" />
+              </svg>
+            </div>
+          </div>
 
-    <div class="stat-card" id="cardStorage">
-      <span class="stat-label">Storage Free</span>
-      <span class="stat-value" id="statStorage">—</span>
-      <span class="stat-unit">GB</span>
-    </div>
+        </div><!-- /.mon-left -->
 
-  </div>
+        <div class="mon-right">
 
-  <!-- ══════════════════════════════════════
-       LIVE PREVIEW CARD
-  ══════════════════════════════════════ -->
-  <div class="card" role="region" aria-labelledby="previewTitle">
-    <h2 class="card-title" id="previewTitle">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <rect x="1" y="2.5" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
-        <circle cx="7" cy="7" r="2.2" stroke="currentColor" stroke-width="1.3"/>
-      </svg>
-      Live Preview
-      <span id="previewBadge" class="preview-badge" aria-live="polite">waiting…</span>
-    </h2>
-    <div class="preview-wrap">
-      <img id="previewImg" class="preview-img" alt="Live confidence preview of the HDMI output" />
-      <div id="previewPlaceholder" class="preview-placeholder">No preview signal yet</div>
-    </div>
-    <p class="stream-help-text" style="margin-top:0.75rem;font-size:0.8rem;color:#a1a1aa;line-height:1.4;">
-      Low-latency confidence feed of the HDMI output — confirm your capture chain is live without a separate monitor. Shows the standby card when there's no signal.
-    </p>
-  </div>
+          <!-- Destinations -->
+          <div class="card">
+            <div class="card-hd">
+              <span class="card-label">Destinations</span>
+              <button class="card-link" type="button" data-goto="outputs">Edit</button>
+            </div>
+            <div class="dest-list" id="destList"></div>
+          </div>
 
-  <!-- ══════════════════════════════════════
-       STREAM CONTROL CARD
-  ══════════════════════════════════════ -->
-  <div class="card" role="region" aria-labelledby="ctrlTitle">
-    <h2 class="card-title" id="ctrlTitle">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <polygon points="3,1 13,7 3,13" fill="currentColor"/>
-      </svg>
-      Stream Control
-    </h2>
-    <div class="stream-btn-wrap">
-      <button
-        class="btn-stream start"
-        id="streamBtn"
-        onclick="toggleStream()"
-        aria-label="Resume stream"
-      >
-        <span id="streamBtnLabel">▶ &nbsp;RESUME</span>
-      </button>
-      <span class="stream-status-text" id="streamStatusText">Stream is <span>idle</span></span>
-    </div>
-    <p class="stream-help-text" style="margin-top: 1rem; font-size: 0.85rem; color: #a1a1aa; line-height: 1.4;">
-      <strong style="color: #e4e4e7;">Note:</strong> Capturing starts automatically when goggles are connected if Auto-Connect is enabled. Use this button to manually pause or resume.
-    </p>
-  </div>
+          <!-- Box health -->
+          <div class="card">
+            <div class="card-hd"><span class="card-label">Box health</span></div>
+            <div class="health-rows">
+              <div>
+                <div class="health-hd">
+                  <span class="health-label">SOC temp</span>
+                  <span class="health-value" id="healthTempVal">—</span>
+                </div>
+                <div class="meter"><div class="meter-fill" id="healthTempFill" style="width:0"></div></div>
+              </div>
+              <div>
+                <div class="health-hd">
+                  <span class="health-label">Storage free</span>
+                  <span class="health-value" id="healthStoreVal">—</span>
+                </div>
+                <div class="meter"><div class="meter-fill" id="healthStoreFill" style="width:0"></div></div>
+              </div>
+              <!-- Below 700px the HUD sheds its third metric; it lands here,
+                   where there is room to label it properly. -->
+              <div id="healthLatencyRow" hidden>
+                <div class="health-hd">
+                  <span class="health-label">Ingest &rarr; HDMI</span>
+                  <span class="health-value" id="healthLatencyVal">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="health-ftr">
+              <span id="healthSession">session —</span>
+              <span id="healthResolution">—</span>
+            </div>
+          </div>
 
-  <!-- ══════════════════════════════════════
-       STREAM CONFIGURATION CARD
-  ══════════════════════════════════════ -->
-  <div class="card" role="region" aria-labelledby="configTitle">
-    <h2 class="card-title" id="configTitle">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <circle cx="7" cy="7" r="2.5" stroke="currentColor" stroke-width="1.4"/>
-        <path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.6 2.6l1.4 1.4M10 10l1.4 1.4M2.6 11.4l1.4-1.4M10 4l1.4-1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-      </svg>
-      Stream Configuration
-    </h2>
+          <!-- Action -->
+          <div class="action-wrap">
+            <button class="action" id="actionBtn" type="button">
+              <span class="action-progress" id="actionProgress" aria-hidden="true"></span>
+              <span class="action-label" id="actionLabel">RESUME CAPTURE</span>
+              <span class="action-hint" id="actionHint">starts immediately</span>
+            </button>
+            <div class="action-caption" id="actionCaption">&nbsp;</div>
+          </div>
 
-    <!-- Goggles model -->
-    <div class="form-group">
-      <label class="field-label" for="gogglesModel">Goggles Model</label>
-      <select id="gogglesModel" aria-label="Select goggles model">
-        <option value="auto">Auto Detect</option>
-        <option value="v1v2">DJI Goggles V1 / V2</option>
-        <option value="goggles2">DJI Goggles 2</option>
-        <option value="goggles3">DJI Goggles 3 / N3</option>
-      </select>
-    </div>
+          <!-- Recent log peek -->
+          <div class="card recent">
+            <div class="card-hd">
+              <span class="card-label">Recent</span>
+              <button class="card-link" type="button" data-goto="logs">All logs</button>
+            </div>
+            <div class="recent-list" id="recentList"></div>
+          </div>
 
-    <!-- Auto-Connect Toggle -->
-    <div class="toggle-row">
-      <div class="toggle-info">
-        <span class="toggle-label">Auto-Connect on Boot</span>
-        <span class="toggle-desc">Automatically start capturing when the system boots</span>
+        </div><!-- /.mon-right -->
       </div>
-      <label class="toggle-switch" for="autoConnectEnabled" aria-label="Enable auto-connect">
-        <input type="checkbox" id="autoConnectEnabled" />
-        <span class="toggle-track" aria-hidden="true"></span>
-      </label>
-    </div>
+    </section>
 
-    <!-- Bitrate slider -->
-    <div class="slider-wrap">
-      <div class="slider-header">
-        <span class="slider-label">Encode Bitrate</span>
-        <span class="slider-value"><span id="bitrateVal">50</span> Mbps</span>
-      </div>
-      <input
-        type="range"
-        id="bitrateSlider"
-        min="2" max="50" step="1" value="50"
-        aria-label="Bitrate in Mbps (fixed at max)"
-        aria-valuemin="2" aria-valuemax="50" aria-valuenow="50"
-        disabled
-      />
-      <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--muted);margin-top:4px;">
-        <span>2 Mbps</span><span>50 Mbps</span>
-      </div>
-    </div>
+    <!-- ══════════════════════════════════════
+         OUTPUTS
+    ══════════════════════════════════════ -->
+    <section class="view" id="view-outputs" role="tabpanel" aria-labelledby="tab-outputs" tabindex="0" hidden>
+      <div class="cfg">
 
-    <!-- SRT Toggle -->
-    <div class="toggle-row">
-      <div class="toggle-info">
-        <span class="toggle-label">SRT Output</span>
-        <span class="toggle-desc">Stream via Secure Reliable Transport</span>
-      </div>
-      <label class="toggle-switch" for="srtEnabled" aria-label="Enable SRT output">
-        <input type="checkbox" id="srtEnabled" onchange="toggleSubField('srtEnabled','srtSub')" />
-        <span class="toggle-track" aria-hidden="true"></span>
-      </label>
-    </div>
-    <div class="toggle-sub" id="srtSub">
-      <label class="field-label" for="srtUrl">SRT URL</label>
-      <input type="url" id="srtUrl" placeholder="srt://0.0.0.0:5000" aria-label="SRT stream URL" />
-    </div>
+        <div class="cfg-left">
 
-    <!-- RTMP Toggle -->
-    <div class="toggle-row">
-      <div class="toggle-info">
-        <span class="toggle-label">RTMP Output</span>
-        <span class="toggle-desc">Push to Twitch, YouTube, or custom RTMP</span>
-      </div>
-      <label class="toggle-switch" for="rtmpEnabled" aria-label="Enable RTMP output">
-        <input type="checkbox" id="rtmpEnabled" onchange="toggleSubField('rtmpEnabled','rtmpSub')" />
-        <span class="toggle-track" aria-hidden="true"></span>
-      </label>
-    </div>
-    <div class="toggle-sub" id="rtmpSub">
-      <label class="field-label" for="rtmpUrl">RTMP URL</label>
-      <input type="url" id="rtmpUrl" placeholder="rtmp://live.twitch.tv/app" aria-label="RTMP server URL" />
-      <label class="field-label" for="rtmpKey">Stream Key</label>
-      <input type="password" id="rtmpKey" placeholder="••••••••••••" aria-label="RTMP stream key" autocomplete="current-password" />
-    </div>
+          <!-- SRT -->
+          <div class="out-card">
+            <div class="out-hd">
+              <div>
+                <div class="out-title">SRT output</div>
+                <div class="out-desc">Secure Reliable Transport — lowest latency, needs a listener</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="srtEnabled" aria-label="Enable SRT output" />
+                <span class="toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="out-body" id="srtBody" hidden>
+              <div class="field">
+                <label class="field-label" for="srtUrl">SRT URL</label>
+                <input class="input" type="url" id="srtUrl" placeholder="srt://0.0.0.0:5000" />
+              </div>
+            </div>
+          </div>
 
-    <!-- NDI Output Toggle -->
-    <div class="toggle-row">
-      <div class="toggle-info">
-        <span class="toggle-label">NDI Output</span>
-        <span class="toggle-desc">Direct output to production switcher over network</span>
-      </div>
-      <label class="toggle-switch" for="ndiEnabled" aria-label="Enable NDI output">
-        <input type="checkbox" id="ndiEnabled" onchange="toggleSubField('ndiEnabled','ndiSub')" />
-        <span class="toggle-track" aria-hidden="true"></span>
-      </label>
-    </div>
-    <div class="toggle-sub" id="ndiSub">
-      <label class="field-label" for="ndiName">NDI Source Name</label>
-      <input type="text" id="ndiName" placeholder="FPVLink" aria-label="NDI stream source name" />
-    </div>
+          <!-- RTMP -->
+          <div class="out-card">
+            <div class="out-hd">
+              <div>
+                <div class="out-title">RTMP output</div>
+                <div class="out-desc">Push to Twitch, YouTube or a custom RTMP server</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="rtmpEnabled" aria-label="Enable RTMP output" />
+                <span class="toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="out-body" id="rtmpBody" hidden>
+              <div class="field">
+                <label class="field-label" for="rtmpUrl">Server URL</label>
+                <input class="input" type="url" id="rtmpUrl" placeholder="rtmp://live.twitch.tv/app" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="rtmpKey">Stream key</label>
+                <input class="input" type="password" id="rtmpKey" placeholder="••••••••••••" autocomplete="current-password" />
+                <!-- The failing output explains itself where you would go to
+                     correct it, rather than only in the log console. -->
+                <div class="field-note" id="rtmpNote">Stored on the device; never sent back to the browser after save.</div>
+              </div>
+            </div>
+          </div>
 
-    <!-- HDMI LUT Configuration -->
-    <div class="toggle-row">
-      <div class="toggle-info">
-        <span class="toggle-label">HDMI 3D LUT</span>
-        <span class="toggle-desc">Apply color grading LUT to HDMI output</span>
-      </div>
-      <label class="toggle-switch" for="hdmiLutEnabled" aria-label="Enable HDMI LUT">
-        <input type="checkbox" id="hdmiLutEnabled" onchange="toggleSubField('hdmiLutEnabled','lutSub')" />
-        <span class="toggle-track" aria-hidden="true"></span>
-      </label>
-    </div>
-    <div class="toggle-sub" id="lutSub">
-      <div id="lutListContainer" style="margin-bottom: 1rem;"></div>
-      <div class="lut-upload-wrap">
-        <input type="file" id="lutFileInput" accept=".cube" style="display:none;" onchange="uploadLut(this.files)" />
-        <button type="button" class="btn btn-ghost" id="lutUploadBtn" onclick="document.getElementById('lutFileInput').click()">Upload New LUT (.cube)</button>
-        <span id="lutUploadStatus" style="margin-left: 10px; font-size: 0.8rem; color: var(--muted);"></span>
-      </div>
-    </div>
+          <!-- NDI -->
+          <div class="out-card">
+            <div class="out-hd">
+              <div>
+                <div class="out-title">NDI output</div>
+                <div class="out-desc">Direct to a production switcher on the local network</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="ndiEnabled" aria-label="Enable NDI output" />
+                <span class="toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="out-body" id="ndiBody" hidden>
+              <div class="field">
+                <label class="field-label" for="ndiName">Source name</label>
+                <input class="input" type="text" id="ndiName" placeholder="FPVLink" />
+              </div>
+            </div>
+          </div>
 
-    <!-- Standby / Test Card -->
-    <div class="form-group">
-      <label class="field-label">Standby / Test Card</label>
-      <p style="font-size: 0.78rem; color: var(--muted); margin: -2px 0 4px; line-height: 1.4;">
-        Shown on HDMI whenever there's no live signal. Selecting a card applies immediately (~3s blip) — push Bars or Black to test the downstream chain (converter, cabling, switcher input) before the drone is even on.
-      </p>
-      <div id="standbyCardContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px;"></div>
-    </div>
+          <!-- HDMI 3D LUT -->
+          <div class="out-card">
+            <div class="out-hd">
+              <div>
+                <div class="out-title">HDMI 3D LUT</div>
+                <div class="out-desc">Colour grade applied to the HDMI output. Up to five .cube files.</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="hdmiLutEnabled" aria-label="Enable HDMI LUT" />
+                <span class="toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="out-body" id="lutBody" hidden>
+              <div class="lut-list" id="lutList"></div>
+              <div class="lut-ftr">
+                <input type="file" id="lutFileInput" accept=".cube" hidden />
+                <button class="btn btn-ghost" type="button" id="lutUploadBtn">Upload .cube</button>
+                <span class="lut-count" id="lutCount">0 of 5 used</span>
+              </div>
+            </div>
+          </div>
 
-    <!-- Save button row -->
-    <div class="config-footer">
-      <span class="save-status" id="saveStatus" role="status" aria-live="polite">✓ Saved</span>
-      <button class="btn btn-ghost" id="resetConfigBtn" onclick="loadConfig()" aria-label="Reset configuration to current saved values">
-        Reset
-      </button>
-      <button class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()" aria-label="Save configuration">
-        Save Config
-      </button>
-    </div>
+          <!-- Standby / test card -->
+          <div class="out-card">
+            <div class="out-hd">
+              <div>
+                <div class="out-title">Standby / test card</div>
+                <div class="out-desc">Sent on HDMI whenever there is no live signal. Applies immediately — push Bars to prove the downstream chain before the drone is even powered.</div>
+              </div>
+            </div>
+            <!-- Always visible: unlike the outputs above, this has no toggle. -->
+            <div class="out-body">
+              <div class="standby-row" id="standbyRow"></div>
+            </div>
+          </div>
 
-  </div>
+        </div><!-- /.cfg-left -->
 
-  <!-- ══════════════════════════════════════
-       LOG CONSOLE CARD
-  ══════════════════════════════════════ -->
-  <div class="card" style="padding: 0;" role="region" aria-labelledby="logTitle">
-    <div class="log-console">
-      <div class="log-header">
-        <span class="log-title" id="logTitle">System Logs</span>
-        <div class="log-controls" aria-hidden="true">
-          <span class="log-dot red"></span>
-          <span class="log-dot yellow"></span>
-          <span class="log-dot green"></span>
+        <div class="cfg-right">
+          <div class="card">
+            <div class="card-hd"><span class="card-label">Live status</span></div>
+            <div class="dest-list" id="destListCfg"></div>
+          </div>
+
+          <div class="card">
+            <div class="save-note" id="saveNote">Configuration matches what is running on the device.</div>
+            <div class="save-row">
+              <button class="btn btn-primary" type="button" id="saveBtn" disabled>Save &amp; apply</button>
+              <button class="btn btn-ghost" type="button" id="resetBtn">Reset</button>
+            </div>
+          </div>
         </div>
-        <button class="btn btn-ghost" style="padding:4px 10px;font-size:0.72rem;" id="downloadDiagBtn" onclick="downloadDiagnostics()" aria-label="Download diagnostics bundle for support">Download Diagnostics</button>
-        <button class="btn btn-ghost" style="padding:4px 10px;font-size:0.72rem;" onclick="clearLogs()" aria-label="Clear log console">Clear</button>
-      </div>
-      <div class="log-body" id="logBody" role="log" aria-label="System log output" aria-live="polite" aria-atomic="false">
-        <span class="log-line info">[FPVLink] Connecting to device…</span>
-      </div>
-    </div>
-  </div>
 
-  <!-- ══════════════════════════════════════
-       FOOTER
-  ══════════════════════════════════════ -->
-  <footer class="site-footer" role="contentinfo">
-    <span class="footer-left">FPVLink &copy; 2025 — Orange Pi 5 Plus</span>
-    <nav class="footer-right" aria-label="Footer links">
-      <a class="footer-link" href="https://github.com/fpvlink/fpvlink" target="_blank" rel="noopener noreferrer" aria-label="FPVLink on GitHub">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <path d="M7 1C3.69 1 1 3.69 1 7c0 2.65 1.72 4.9 4.1 5.69.3.06.41-.13.41-.29v-1.02c-1.67.36-2.02-.8-2.02-.8-.27-.69-.67-.87-.67-.87-.55-.37.04-.36.04-.36.6.04.92.62.92.62.54.92 1.4.65 1.75.5.05-.39.21-.65.38-.8-1.33-.15-2.73-.67-2.73-2.97 0-.66.23-1.19.62-1.61-.06-.15-.27-.76.06-1.59 0 0 .51-.16 1.67.62A5.84 5.84 0 017 3.8c.52 0 1.04.07 1.53.2 1.15-.78 1.66-.62 1.66-.62.33.83.12 1.44.06 1.59.39.42.62.95.62 1.61 0 2.31-1.4 2.82-2.74 2.97.22.19.41.56.41 1.12v1.67c0 .16.11.35.41.29C11.28 11.9 13 9.65 13 7c0-3.31-2.69-6-6-6z" fill="currentColor"/>
-        </svg>
-        GitHub
-      </a>
-      <span class="footer-left" id="footerVersion">v1.0.0</span>
-    </nav>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         LOGS
+    ══════════════════════════════════════ -->
+    <section class="view" id="view-logs" role="tabpanel" aria-labelledby="tab-logs" tabindex="0" hidden>
+      <div class="logs">
+        <div class="log-bar">
+          <button class="chip is-on" type="button" data-level="all"  id="chipAll">ALL 0</button>
+          <button class="chip"       type="button" data-level="err"  id="chipErr">ERR 0</button>
+          <button class="chip"       type="button" data-level="warn" id="chipWarn">WARN 0</button>
+          <button class="chip"       type="button" data-level="info" id="chipInfo">INFO 0</button>
+          <div class="log-bar-right">
+            <button class="btn btn-ghost" type="button" id="wrapBtn">Wrap</button>
+            <button class="btn btn-ghost" type="button" id="copyBtn">Copy</button>
+            <button class="btn btn-ghost" type="button" id="clearBtn">Clear</button>
+            <button class="btn btn-accent" type="button" id="diagBtn">Download diagnostics</button>
+          </div>
+        </div>
+        <div class="log-body" id="logBody" role="log" aria-label="System log output" aria-live="polite" aria-atomic="false"></div>
+        <div class="log-ftr">
+          <span id="logCount">0 of 0 lines shown</span>
+          <span id="logBufferNote">buffer 500 lines &middot; repeats collapsed</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SYSTEM
+    ══════════════════════════════════════ -->
+    <section class="view" id="view-system" role="tabpanel" aria-labelledby="tab-system" tabindex="0" hidden>
+      <div class="sys">
+
+        <div class="sys-col">
+        <div class="out-card">
+          <div class="out-title">Capture source</div>
+
+          <div class="sys-div">
+            <div class="field">
+              <label class="field-label" for="gogglesModel">Goggles model</label>
+              <select class="input" id="gogglesModel">
+                <option value="auto">Auto detect</option>
+                <option value="v1v2">DJI Goggles V1 / V2</option>
+                <option value="goggles2">DJI Goggles 2</option>
+                <option value="goggles3">DJI Goggles 3 / N3</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="sys-div">
+            <div class="sys-row">
+              <div>
+                <div class="out-title" style="font-size:12px">Auto-connect on boot</div>
+                <div class="out-desc">Start capturing as soon as the goggles enumerate</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="autoConnect" aria-label="Auto-connect on boot" />
+                <span class="toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="sys-div">
+            <div class="rate-hd">
+              <span class="out-title" style="font-size:12px">Encode bitrate</span>
+              <span class="rate-val">50 Mbps &middot; fixed</span>
+            </div>
+            <div class="rate-bar" aria-hidden="true"></div>
+            <div class="field-note">Locked at source rate — the goggles emit a fixed-bitrate H.264 stream and FPVLink passes it through without re-encoding.</div>
+          </div>
+        </div>
+
+        <div class="out-card">
+          <div class="out-title">Support</div>
+          <div class="sys-div">
+            <div class="support-row">
+              <button class="btn btn-accent" type="button" id="diagBtn2">Download diagnostics</button>
+            </div>
+            <div class="field-note">Bundle contains config, recent log lines, dmesg, pipeline state and USB descriptors. No network access required.</div>
+          </div>
+        </div>
+        </div><!-- /.sys-col -->
+
+        <div class="sys-col">
+          <div class="out-card">
+            <div class="out-title">Device</div>
+            <div class="sys-div" id="deviceList"></div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="ftr">
+    <span>FPVLink &copy; 2025 — Orange Pi 5 Plus</span>
+    <span id="ftrVersion">v—</span>
   </footer>
 
-</div><!-- /.page-wrap -->
+</div><!-- /.app -->
 
-<script>
-/* ═══════════════════════════════════════════════════════════
-   FPVLink Dashboard — Client JS
-   Handles: WebSocket, REST API, UI state, config form
-═══════════════════════════════════════════════════════════ */
-
-'use strict';
-
-// ─────────────────────────────────────────────
-// Constants & state
-// ─────────────────────────────────────────────
-const WS_URL      = `ws://${location.hostname}:${location.port || 8080}/ws`;
-const API         = (path) => `/api${path}`;
-const LOG_MAX     = 100;
-const RECONNECT_MS = 3000;
-
-let ws           = null;
-let wsRetryTimer = null;
-let isStreaming  = false;
-let pipelineStatus = 'offline';
-let uptimeStart  = null;
-let uptimeTimer  = null;
-let lastDroppedFrames = 0;
-let droppedWarnTimer = null;
-
-// ─────────────────────────────────────────────
-// DOM refs
-// ─────────────────────────────────────────────
-const $ = (id) => document.getElementById(id);
-
-const el = {
-  usbLink:           $('usbLink'),
-  usbData:           $('usbData'),
-  usbStream:         $('usbStream'),
-  pipelineStatus:    $('pipelineStatus'),
-  networkStatus:     $('networkStatus'),
-  uptimeBadge:       $('uptimeBadge'),
-  uptimeText:        $('uptimeText'),
-  statFps:           $('statFps'),
-  statBitrate:       $('statBitrate'),
-  statLatency:       $('statLatency'),
-  statResolution:    $('statResolution'),
-  statDropped:       $('statDropped'),
-  cardDropped:       $('cardDropped'),
-  statBytes:         $('statBytes'),
-  statBytesUnit:     $('statBytesUnit'),
-  cardFrameGap:      $('cardFrameGap'),
-  statFrameGapP95:   $('statFrameGapP95'),
-  statFrameGapMean:  $('statFrameGapMean'),
-  cardTemp:          $('cardTemp'),
-  statTemp:          $('statTemp'),
-  cardStorage:       $('cardStorage'),
-  statStorage:       $('statStorage'),
-  streamBtn:         $('streamBtn'),
-  streamBtnLabel:    $('streamBtnLabel'),
-  streamStatusText:  $('streamStatusText'),
-  previewImg:         $('previewImg'),
-  previewPlaceholder: $('previewPlaceholder'),
-  previewBadge:       $('previewBadge'),
-  offlineBanner:     $('offlineBanner'),
-  criticalBanner:    $('criticalBanner'),
-  criticalBannerText:$('criticalBannerText'),
-  logBody:           $('logBody'),
-  saveStatus:        $('saveStatus'),
-  deviceName:        $('deviceName'),
-  firmwareVersion:   $('firmwareVersion'),
-  footerVersion:     $('footerVersion'),
-
-  // Config form fields
-  gogglesModel:      $('gogglesModel'),
-  autoConnectEnabled:$('autoConnectEnabled'),
-  srtEnabled:        $('srtEnabled'),
-  srtUrl:            $('srtUrl'),
-  rtmpEnabled:       $('rtmpEnabled'),
-  rtmpUrl:           $('rtmpUrl'),
-  rtmpKey:           $('rtmpKey'),
-  ndiEnabled:        $('ndiEnabled'),
-  ndiName:           $('ndiName'),
-  hdmiLutEnabled:    $('hdmiLutEnabled'),
-};
-
-// ─────────────────────────────────────────────
-// WebSocket
-// ─────────────────────────────────────────────
-function connectWS() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
-
-  ws = new WebSocket(WS_URL);
-
-  ws.addEventListener('open', () => {
-    hideOfflineBanner();
-    appendLog('[ws] Connected to FPVLink device', 'ok');
-    clearTimeout(wsRetryTimer);
-  });
-
-  ws.addEventListener('message', (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
-
-    if (msg.type === 'stats')     handleStats(msg);
-    if (msg.type === 'log')       appendLog(msg.line);
-    if (msg.type === 'log_batch') msg.lines.forEach((l) => appendLog(l));
-    if (msg.type === 'preview')   handlePreview(msg);
-  });
-
-  ws.addEventListener('close', () => {
-    showOfflineBanner();
-    wsRetryTimer = setTimeout(connectWS, RECONNECT_MS);
-  });
-
-  ws.addEventListener('error', () => {
-    ws.close();
-  });
-}
-
-function showOfflineBanner() {
-  el.offlineBanner.classList.add('visible');
-}
-
-function hideOfflineBanner() {
-  el.offlineBanner.classList.remove('visible');
-}
-
-// ─────────────────────────────────────────────
-// Live preview (JPEG-over-WS confidence feed)
-// ─────────────────────────────────────────────
-let lastPreviewAt = 0;
-let previewStaleTimer = null;
-
-function handlePreview(msg) {
-  if (!msg.frame || !el.previewImg) return;
-  el.previewImg.src = `data:image/jpeg;base64,${msg.frame}`;
-  el.previewImg.classList.add('has-frame');
-  if (el.previewPlaceholder) el.previewPlaceholder.style.display = 'none';
-  lastPreviewAt = Date.now();
-  el.previewBadge.textContent = 'live';
-  el.previewBadge.classList.add('live');
-}
-
-// Watchdog: if frames stop arriving, the preview is frozen on its last image —
-// flag it rather than let a stale picture imply everything's fine (the exact
-// false-confidence trap this whole feature exists to avoid).
-setInterval(() => {
-  if (!el.previewBadge) return;
-  if (lastPreviewAt === 0) return; // never received a frame yet
-  const ageMs = Date.now() - lastPreviewAt;
-  if (ageMs > 2000) {
-    el.previewBadge.textContent = 'stale';
-    el.previewBadge.classList.remove('live');
-    el.previewImg.classList.add('stale');
-  } else {
-    el.previewImg.classList.remove('stale');
-  }
-}, 1000);
-
-// ─────────────────────────────────────────────
-// Stats update
-// ─────────────────────────────────────────────
-function handleStats(s) {
-  // Liveness signal. The pipeline reports 'live' only when real video is
-  // flowing (not the standby card, not offline), and zeroes fps/bitrate/
-  // resolution/dropped in every other state (see report_status_loop in
-  // pipeline.py). `s.streaming` was never sent by the server, so every
-  // `s.streaming &&` gate here passed `undefined` to classList.toggle — which
-  // the DOM spec treats as an omitted force arg, i.e. a plain flip-flop toggle
-  // that made the accent color strobe on/off every tick regardless of state.
-  // Per-value tiles now gate on the (already-zeroed-in-standby) value itself;
-  // tiles whose idle value is indistinguishable from healthy gate on `live`.
-  const live = s.pipeline_status === 'live';
-
-  // FPS
-  const fps = parseFloat(s.fps || 0);
-  el.statFps.textContent = fps.toFixed(0);
-  el.statFps.classList.toggle('live', fps > 0);
-
-  // Bitrate
-  const mbps = (s.bitrate_kbps / 1000).toFixed(1);
-  el.statBitrate.textContent = mbps;
-  el.statBitrate.classList.toggle('live', s.bitrate_kbps > 0);
-
-  // Latency — FPVLink's own internal ingest→display delay (measured in
-  // capture/pipeline.py). This is the portion of glass-to-glass latency the box
-  // is responsible for, not the full drone-camera-to-screen number (no
-  // capture-side timestamp from the goggles exists for that). The pipeline
-  // reports 0 when not live, so 0/absent → show a neutral dash.
-  const latency = Number(s.latency_ms);
-  if (latency > 0) {
-    el.statLatency.textContent = latency.toFixed(0);
-    el.statLatency.classList.add('live');
-  } else {
-    el.statLatency.textContent = '—';
-    el.statLatency.classList.remove('live');
-  }
-
-  // Frame pacing — mean/p95 inter-frame arrival gap. Compared against the
-  // ideal gap (1000/fps) rather than a hardcoded frame period, since source
-  // framerate isn't fixed (varies by goggles model/resolution).
-  const gapP95  = Number(s.frame_gap_p95_ms) || 0;
-  const gapMean = Number(s.frame_gap_mean_ms) || 0;
-  // Gated on the value itself (pipeline.py reports 0 when not live), same
-  // convention as the Latency tile above — s.streaming is never actually
-  // sent by the server, so it can't be used as a liveness gate.
-  if (fps > 0 && gapP95 > 0) {
-    el.statFrameGapP95.textContent  = gapP95.toFixed(1);
-    el.statFrameGapMean.textContent = gapMean.toFixed(1);
-    const idealGapMs = 1000 / fps;
-    const critical = gapP95 > idealGapMs * 2.5;
-    el.cardFrameGap.classList.toggle('critical-state', critical);
-    el.cardFrameGap.classList.toggle('warn-state', !critical && gapP95 > idealGapMs * 1.5);
-  } else {
-    el.statFrameGapP95.textContent  = '—';
-    el.statFrameGapMean.textContent = '—';
-    el.cardFrameGap.classList.remove('warn-state', 'critical-state');
-  }
-
-  // Resolution
-  el.statResolution.textContent = s.resolution || '—';
-  el.statResolution.classList.toggle('live', !!s.resolution && s.resolution !== '—');
-
-  // Dropped frames
-  const dropped = parseInt(s.dropped_frames || 0, 10);
-  if (live) {
-    if (dropped > lastDroppedFrames) {
-      const diff = dropped - lastDroppedFrames;
-      // If frames are dropping rapidly, trigger warning state
-      if (diff > 0) {
-        el.cardDropped.classList.add('warn-state');
-        clearTimeout(droppedWarnTimer);
-        // Remove warning after 2 seconds of no new drops
-        droppedWarnTimer = setTimeout(() => {
-          el.cardDropped.classList.remove('warn-state');
-        }, 2000);
-      }
-    }
-  } else {
-    el.cardDropped.classList.remove('warn-state');
-    lastDroppedFrames = 0;
-  }
-  lastDroppedFrames = dropped;
-  el.statDropped.textContent = dropped;
-  el.statDropped.classList.toggle('live', live && dropped === 0); // Active color when healthy
-
-  // Bytes received — auto-scale to MB / GB
-  const bytes = s.bytes_received || 0;
-  if (bytes >= 1e9) {
-    el.statBytes.textContent     = (bytes / 1e9).toFixed(2);
-    el.statBytesUnit.textContent = 'GB';
-  } else {
-    el.statBytes.textContent     = (bytes / 1e6).toFixed(1);
-    el.statBytesUnit.textContent = 'MB';
-  }
-
-  // USB link-state stages
-  setStatus(el.usbLink,   s.usb_link   ? 'active' : '');
-  setStatus(el.usbData,   s.usb_data   ? 'active' : '');
-  setStatus(el.usbStream, s.usb_stream ? 'active' : '');
-
-  // Pipeline & network status dots track real pipeline liveness (`live` above).
-  setStatus(el.pipelineStatus, live ? 'active' : '');
-  setStatus(el.networkStatus,  live ? 'active' : '');
-
-  // Stream button state sync
-  if (s.capture_enabled !== undefined && s.capture_enabled !== isStreaming) {
-    isStreaming = s.capture_enabled;
-    updateStreamBtn(isStreaming);
-  }
-  if (s.pipeline_status !== undefined && s.pipeline_status !== pipelineStatus) {
-    pipelineStatus = s.pipeline_status;
-    updatePipelineStatusUI();
-  }
-
-
-  // Uptime
-  if (live && s.uptime_seconds > 0) {
-    el.uptimeText.textContent = formatUptime(s.uptime_seconds);
-  } else if (!live) {
-    el.uptimeText.textContent = '00:00:00';
-  }
-
-  // Hardware Telemetry
-  if (s.soc_temp !== undefined && s.soc_temp !== null) {
-    el.statTemp.textContent = s.soc_temp;
-    el.cardTemp.classList.toggle('warn-state', s.thermal_state === 'WARN');
-    el.cardTemp.classList.toggle('critical-state', s.thermal_state === 'CRITICAL');
-  } else {
-    el.statTemp.textContent = '—';
-    el.cardTemp.classList.remove('warn-state', 'critical-state');
-  }
-  
-  if (s.storage_free_gb !== undefined && s.storage_free_gb !== null) {
-    el.statStorage.textContent = s.storage_free_gb;
-    el.cardStorage.classList.toggle('warn-state', s.storage_state === 'WARN');
-    el.cardStorage.classList.toggle('critical-state', s.storage_state === 'CRITICAL');
-  } else {
-    el.statStorage.textContent = '—';
-    el.cardStorage.classList.remove('warn-state', 'critical-state');
-  }
-  
-  // Critical Banner Logic
-  let criticalMessages = [];
-  if (s.thermal_state === 'CRITICAL') {
-    criticalMessages.push(`SOC Throttling Detected (${s.soc_temp}°C)`);
-  }
-  if (s.storage_state === 'CRITICAL') {
-    criticalMessages.push(`Storage Exhausted (${s.storage_free_gb} GB free)`);
-  }
-  
-  if (criticalMessages.length > 0) {
-    el.criticalBannerText.textContent = criticalMessages.join(" | ");
-    el.criticalBanner.classList.add('visible');
-  } else {
-    el.criticalBanner.classList.remove('visible');
-  }
-}
-
-function setStatus(el, cls) {
-  el.className = 'status-item' + (cls ? ' ' + cls : '');
-}
-
-function formatUptime(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return [h, m, s].map((v) => String(v).padStart(2, '0')).join(':');
-}
-
-// ─────────────────────────────────────────────
-// Stream control
-// ─────────────────────────────────────────────
-async function toggleStream() {
-  const endpoint = isStreaming ? '/capture/disable' : '/capture/enable';
-  el.streamBtn.disabled = true;
-
-  try {
-    const res  = await fetch(API(endpoint), { method: 'POST' });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || 'Request failed');
-    isStreaming = !isStreaming;
-    updateStreamBtn(isStreaming);
-  } catch (err) {
-    appendLog(`[error] Stream toggle failed: ${err.message}`, 'error');
-  } finally {
-    el.streamBtn.disabled = false;
-  }
-}
-
-
-function updatePipelineStatusUI() {
-    if (pipelineStatus === 'live') {
-        el.streamStatusText.innerHTML = 'Pipeline is <span style="color:var(--accent)">LIVE</span>';
-    } else if (pipelineStatus === 'standby') {
-        el.streamStatusText.innerHTML = 'Pipeline is <span style="color:#fbbf24">STANDBY</span>';
-    } else {
-        el.streamStatusText.innerHTML = 'Pipeline is <span>OFFLINE</span>';
-    }
-}
-
-function updateStreamBtn(streaming) {
-  if (streaming) {
-    el.streamBtn.className        = 'btn-stream stop';
-    el.streamBtn.ariaLabel        = 'Pause stream';
-    el.streamBtnLabel.innerHTML   = '■ &nbsp;PAUSE';
-  } else {
-    el.streamBtn.className        = 'btn-stream start';
-    el.streamBtn.ariaLabel        = 'Resume stream';
-    el.streamBtnLabel.innerHTML   = '▶ &nbsp;RESUME';
-  }
-  updatePipelineStatusUI();
-}
-
-// ─────────────────────────────────────────────
-// Config — load
-// ─────────────────────────────────────────────
-async function loadConfig() {
-  try {
-    const [cfgRes, statRes] = await Promise.all([
-      fetch(API('/config')),
-      fetch(API('/status')),
-    ]);
-    const cfg  = await cfgRes.json();
-    const stat = await statRes.json();
-
-    // Populate form
-    el.gogglesModel.value   = cfg.goggles_model   || 'auto';
-    // Bitrate is fixed at max — slider is disabled, always shows 50.
-    el.srtEnabled.checked   = !!cfg.srt_enabled;
-    el.srtUrl.value         = cfg.srt_url          || '';
-    el.rtmpEnabled.checked  = !!cfg.rtmp_enabled;
-    el.rtmpUrl.value        = cfg.rtmp_url         || '';
-    el.rtmpKey.value        = cfg.rtmp_key         || '';
-    el.ndiEnabled.checked   = !!cfg.ndi_enabled;
-    el.ndiName.value        = cfg.ndi_name         || '';
-    el.hdmiLutEnabled.checked = !!cfg.hdmi_lut_enabled;
-    el.autoConnectEnabled.checked = cfg.auto_connect !== false;
-    window.hdmi_lut_active_id = cfg.hdmi_lut_active_id;
-    window.standby_card = cfg.standby_card || 'grounded';
-
-    // Show/hide sub-fields based on toggle state
-    toggleSubField('srtEnabled',  'srtSub',  true);
-    toggleSubField('rtmpEnabled', 'rtmpSub', true);
-    toggleSubField('ndiEnabled',  'ndiSub',  true);
-    toggleSubField('hdmiLutEnabled', 'lutSub', true);
-
-    // Load LUTs
-    loadLuts();
-    renderStandbyCards();
-
-    // Header meta
-    el.deviceName.textContent    = stat.device_name      || cfg.device_name    || 'FPVLink';
-    el.firmwareVersion.textContent = 'v' + (stat.firmware_version || cfg.firmware_version || '1.0.0');
-    el.footerVersion.textContent   = 'v' + (stat.firmware_version || cfg.firmware_version || '1.0.0');
-
-    // Init streaming state
-    isStreaming = !!stat.capture_enabled;
-pipelineStatus = stat.pipeline_status || 'offline';
-    updateStreamBtn(isStreaming);
-
-    appendLog('[config] Configuration loaded', 'ok');
-  } catch (err) {
-    appendLog(`[error] Failed to load config: ${err.message}`, 'error');
-  }
-}
-
-// ─────────────────────────────────────────────
-// Config — save
-// ─────────────────────────────────────────────
-async function saveConfig() {
-  const payload = {
-    goggles_model:   el.gogglesModel.value,
-    auto_connect:    el.autoConnectEnabled.checked,
-    bitrate_mbps:    50, // fixed at max — slider is disabled
-    srt_enabled:     el.srtEnabled.checked,
-    srt_url:         el.srtUrl.value.trim(),
-    rtmp_enabled:    el.rtmpEnabled.checked,
-    rtmp_url:        el.rtmpUrl.value.trim(),
-    rtmp_key:        el.rtmpKey.value,
-    ndi_enabled:     el.ndiEnabled.checked,
-    ndi_name:        el.ndiName.value.trim(),
-    hdmi_lut_enabled: el.hdmiLutEnabled.checked,
-    hdmi_lut_active_id: window.hdmi_lut_active_id || '',
-    standby_card:    window.standby_card || 'grounded',
-  };
-
-  const btn = $('saveConfigBtn');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-
-  try {
-    const res  = await fetch(API('/config'), {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-    });
-    const body = await res.json();
-    if (!res.ok) throw new Error((body.details || [body.error]).join(', '));
-
-    // Flash "Saved" indicator
-    el.saveStatus.classList.add('visible');
-    setTimeout(() => el.saveStatus.classList.remove('visible'), 2500);
-    appendLog('[config] Configuration saved', 'ok');
-  } catch (err) {
-    appendLog(`[error] Save failed: ${err.message}`, 'error');
-  } finally {
-    btn.disabled    = false;
-    btn.textContent = 'Save Config';
-  }
-}
-
-// ─────────────────────────────────────────────
-// UI helpers
-// ─────────────────────────────────────────────
-function toggleSubField(checkboxId, subId, silent) {
-  const cb  = $(checkboxId);
-  const sub = $(subId);
-  if (!cb || !sub) return;
-  if (cb.checked) {
-    sub.classList.add('visible');
-  } else {
-    sub.classList.remove('visible');
-  }
-}
-
-// ─────────────────────────────────────────────
-// Log console
-// ─────────────────────────────────────────────
-let logLineCount = 0;
-let lastLogKey    = null;   // last line's message body, timestamp stripped
-let lastLogSpan   = null;   // its <span>, so consecutive repeats collapse in place
-let lastLogRepeat = 1;
-
-// Strip a leading ISO-timestamp bracket so lines that differ only by their
-// timestamp (e.g. an 8s respawn loop) are recognised as the same message.
-function logMessageKey(line) {
-  return line.replace(/^\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]\s*/, '');
-}
-
-function appendLog(rawLine, forceClass) {
-  const line = String(rawLine);
-  const key  = logMessageKey(line);
-
-  // Collapse an unbroken run of the same message into one line with a ×N count
-  // instead of letting a stuck failure loop flood — and silently evict — the
-  // 100-line buffer. The refreshed text keeps the most recent timestamp visible.
-  if (key === lastLogKey && lastLogSpan) {
-    lastLogRepeat++;
-    lastLogSpan.textContent = `${line}  ×${lastLogRepeat}`;
-    el.logBody.scrollTop = el.logBody.scrollHeight;
-    return;
-  }
-
-  const cls  = forceClass || detectLogClass(line);
-
-  const span = document.createElement('span');
-  span.className = `log-line ${cls}`;
-  span.textContent = line;
-
-  el.logBody.appendChild(span);
-  el.logBody.appendChild(document.createTextNode('\n'));
-
-  lastLogKey    = key;
-  lastLogSpan   = span;
-  lastLogRepeat = 1;
-
-  logLineCount++;
-  // Trim old lines
-  while (logLineCount > LOG_MAX) {
-    if (el.logBody.firstChild) {
-      el.logBody.removeChild(el.logBody.firstChild);
-      // Remove accompanying newline
-      if (el.logBody.firstChild?.nodeType === 3) {
-        el.logBody.removeChild(el.logBody.firstChild);
-      }
-    }
-    logLineCount--;
-  }
-
-  // Auto-scroll to bottom
-  el.logBody.scrollTop = el.logBody.scrollHeight;
-}
-
-function detectLogClass(line) {
-  const lower = line.toLowerCase();
-  // Content-based detection comes first, and deliberately outranks the level
-  // tag: the server wraps ALL child-process stdout/stderr in [INFO], so a real
-  // failure like "sudo: a password is required" arrives tagged [INFO]. Keying
-  // "ok" off [info] (as before) painted those failures success-green — actively
-  // misleading in the one console a user relies on to see why capture broke.
-  if (/\[error\]|exception|traceback|critical|\bfailed\b|\berror\b|password is required|permission denied|not permitted|no such|cannot |can't /.test(lower)) return 'error';
-  if (/\[warn\]|warning|respawn|retry/.test(lower)) return 'warn';
-  if (/\[ok\]|started|connected|saved|success|listening/.test(lower)) return 'ok';
-  if (/\[debug\]/.test(lower))          return 'debug';
-  return 'info'; // neutral: bare [INFO] lines with no signal keyword
-}
-
-function clearLogs() {
-  el.logBody.innerHTML = '';
-  logLineCount = 0;
-  lastLogKey    = null;
-  lastLogSpan   = null;
-  lastLogRepeat = 1;
-  appendLog('[log] Console cleared', 'info');
-}
-
-// ─────────────────────────────────────────────
-// Diagnostics bundle (for support, no internet required)
-// ─────────────────────────────────────────────
-async function downloadDiagnostics() {
-  const btn = $('downloadDiagBtn');
-  const originalText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Collecting…';
-
-  try {
-    const res = await fetch(API('/diagnostics'));
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
-    const blob = await res.blob();
-    const disposition = res.headers.get('Content-Disposition') || '';
-    const match = disposition.match(/filename="([^"]+)"/);
-    const filename = match ? match[1] : 'fpvlink-diagnostics.tar.gz';
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
-    appendLog(`[diagnostics] Downloaded ${filename}`, 'ok');
-  } catch (err) {
-    appendLog(`[error] Diagnostics download failed: ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = originalText;
-  }
-}
-
-// ─────────────────────────────────────────────
-// Standby / test card selection
-// ─────────────────────────────────────────────
-const STANDBY_CARDS = [
-  { id: 'grounded', label: 'Grounded', desc: 'Default standby card' },
-  { id: 'bars',     label: 'Bars',     desc: 'SMPTE-style test pattern' },
-  { id: 'black',    label: 'Black',    desc: 'Sync black' },
-];
-
-function renderStandbyCards() {
-  const container = $('standbyCardContainer');
-  if (!container) return;
-
-  let html = '';
-  STANDBY_CARDS.forEach(card => {
-    const isActive = card.id === window.standby_card;
-    html += `
-      <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid ${isActive ? 'var(--accent)' : 'transparent'};">
-        <label style="display: flex; align-items: center; cursor: pointer; gap: 8px; flex: 1;">
-          <input type="radio" name="standby_card" value="${card.id}" ${isActive ? 'checked' : ''} onchange="setStandbyCard('${card.id}')" />
-          <span style="font-size: 0.9rem;">${card.label}</span>
-          <span style="font-size: 0.75rem; color: var(--muted); margin-left: 4px;">${card.desc}</span>
-        </label>
-      </div>
-    `;
-  });
-  container.innerHTML = html;
-}
-
-async function setStandbyCard(id) {
-  window.standby_card = id;
-  renderStandbyCards();
-  saveConfig(); // auto-save on select, same as LUT selection
-}
-
-// ─────────────────────────────────────────────
-// LUT Management JS
-// ─────────────────────────────────────────────
-async function loadLuts() {
-  try {
-    const res = await fetch(API('/luts'));
-    const luts = await res.json();
-    renderLuts(luts);
-  } catch (err) {
-    appendLog(`[error] Failed to load LUTs: ${err.message}`, 'error');
-  }
-}
-
-function renderLuts(luts) {
-  const container = $('lutListContainer');
-  const btn = $('lutUploadBtn');
-  if (!container) return;
-
-  if (luts.length >= 5) {
-    btn.disabled = true;
-    btn.textContent = 'Upload New LUT (Max 5 Reached)';
-  } else {
-    btn.disabled = false;
-    btn.textContent = 'Upload New LUT (.cube)';
-  }
-
-  if (luts.length === 0) {
-    container.innerHTML = '<div style="font-size: 0.85rem; color: var(--muted);">No LUTs uploaded yet.</div>';
-    return;
-  }
-
-  let html = '<div style="display: flex; flex-direction: column; gap: 8px;">';
-  luts.forEach(lut => {
-    const isActive = lut.id === window.hdmi_lut_active_id;
-    html += `
-      <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px solid ${isActive ? 'var(--accent)' : 'transparent'};">
-        <label style="display: flex; align-items: center; cursor: pointer; gap: 8px; flex: 1;">
-          <input type="radio" name="active_lut" value="${lut.id}" ${isActive ? 'checked' : ''} onchange="setActiveLut('${lut.id}')" />
-          <span style="font-size: 0.9rem;">${lut.display_name}</span>
-        </label>
-        <button type="button" class="btn-icon" style="padding: 4px; color: #ff5252; opacity: 0.7;" onclick="deleteLut('${lut.id}')" aria-label="Delete LUT" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.7">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8m0-8l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </button>
-      </div>
-    `;
-  });
-  html += '</div>';
-  container.innerHTML = html;
-}
-
-async function setActiveLut(id) {
-  window.hdmi_lut_active_id = id;
-  saveConfig(); // auto-save on select
-}
-
-async function deleteLut(id) {
-  if (!confirm('Are you sure you want to delete this LUT?')) return;
-  try {
-    const res = await fetch(API(`/luts/${id}`), { method: 'DELETE' });
-    if (!res.ok) throw new Error('Delete failed');
-    const data = await res.json();
-    if (window.hdmi_lut_active_id === id) {
-      window.hdmi_lut_active_id = '';
-      // Also save the config to ensure pipeline knows we dropped it
-      saveConfig();
-    }
-    renderLuts(data.manifest);
-    appendLog(`[lut] Deleted LUT`, 'ok');
-  } catch (err) {
-    appendLog(`[error] Delete LUT: ${err.message}`, 'error');
-  }
-}
-
-async function uploadLut(files) {
-  if (!files || files.length === 0) return;
-  const file = files[0];
-  const status = $('lutUploadStatus');
-  
-  if (!file.name.toLowerCase().endsWith('.cube')) {
-    status.textContent = 'Only .cube files allowed.';
-    status.style.color = '#ff5252';
-    return;
-  }
-  
-  status.textContent = 'Uploading...';
-  status.style.color = 'var(--muted)';
-  
-  const fd = new FormData();
-  fd.append('lutFile', file);
-  fd.append('displayName', file.name.replace('.cube', ''));
-
-  try {
-    const res = await fetch(API('/lut-upload'), {
-      method: 'POST',
-      body: fd
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
-    
-    status.textContent = 'Uploaded successfully.';
-    status.style.color = 'var(--ok)';
-    renderLuts(data.manifest);
-    appendLog(`[lut] Uploaded ${file.name}`, 'ok');
-  } catch (err) {
-    status.textContent = err.message;
-    status.style.color = '#ff5252';
-    appendLog(`[error] LUT Upload: ${err.message}`, 'error');
-  } finally {
-    $('lutFileInput').value = ''; // reset
-    setTimeout(() => {
-      if (status.textContent === 'Uploaded successfully.') status.textContent = '';
-    }, 3000);
-  }
-}
-
-// ─────────────────────────────────────────────
-// Initial API status fetch (before WS is live)
-// ─────────────────────────────────────────────
-async function fetchInitialLogs() {
-  try {
-    const res  = await fetch(API('/logs'));
-    const body = await res.json();
-    (body.lines || []).slice(-50).forEach((l) => appendLog(l));
-  } catch { /* no-op — WS will deliver logs */ }
-}
-
-// ─────────────────────────────────────────────
-// Boot
-// ─────────────────────────────────────────────
-async function init() {
-  await loadConfig();
-  await fetchInitialLogs();
-  connectWS();
-}
-
-document.addEventListener('DOMContentLoaded', init);
-</script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>

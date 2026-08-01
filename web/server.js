@@ -12,6 +12,7 @@ const http           = require('http');
 const WebSocket      = require('ws');
 const path           = require('path');
 const fs             = require('fs');
+const os             = require('os');
 const { spawn, execFile } = require('child_process');
 const readline       = require('readline');
 const dgram          = require('dgram');
@@ -81,10 +82,45 @@ const upload = multer({
   }
 });
 
+// Pull the cube's grid size out of its header. Every valid .cube declares
+// LUT_3D_SIZE; the upload validator already rejects files without it.
+function parseLutSize(contents) {
+  const m = contents.match(/^\s*LUT_3D_SIZE\s+(\d+)/m);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function lutFilePath(id) {
+  return path.join(LUTS_DIR, `${id}.cube`);
+}
+
 function readLutsManifest() {
   try {
     if (!fs.existsSync(LUTS_MANIFEST)) return [];
-    return JSON.parse(fs.readFileSync(LUTS_MANIFEST, 'utf8'));
+    const manifest = JSON.parse(fs.readFileSync(LUTS_MANIFEST, 'utf8'));
+
+    // Backfill grid size and byte size for entries written before the dashboard
+    // displayed them. At most five small files, and the result is written back
+    // once so this stops being work on the next call.
+    let dirty = false;
+    for (const lut of manifest) {
+      if (lut.size_bytes !== undefined && lut.lut_3d_size !== undefined) continue;
+      try {
+        const p = lutFilePath(lut.id);
+        lut.size_bytes  = fs.statSync(p).size;
+        lut.lut_3d_size = parseLutSize(fs.readFileSync(p, 'utf8'));
+        dirty = true;
+      } catch {
+        // File is gone or unreadable — record that we looked, so a missing
+        // file doesn't make every future read re-stat it.
+        lut.size_bytes  = lut.size_bytes  ?? null;
+        lut.lut_3d_size = lut.lut_3d_size ?? null;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      try { writeLutsManifest(manifest); } catch { /* display still works */ }
+    }
+    return manifest;
   } catch (err) {
     logger.error(`Failed to read LUTs manifest: ${err.message}`);
     return [];
@@ -184,6 +220,23 @@ function readConfig() {
 function writeConfig(cfg) {
   if (!fs.existsSync(SYSTEM_DIR)) fs.mkdirSync(SYSTEM_DIR, { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+  _configCache = null; // next reader picks up the write
+}
+
+// The stats broadcast needs the output config every 500ms; re-reading and
+// re-parsing config.json at 2 Hz is pointless SD-card churn. Cache it briefly
+// and drop the cache on every write, so a save is still reflected immediately.
+let _configCache = null;
+let _configCacheAt = 0;
+const CONFIG_CACHE_MS = 2000;
+
+function cachedConfig() {
+  const now = Date.now();
+  if (!_configCache || now - _configCacheAt > CONFIG_CACHE_MS) {
+    _configCache = readConfig();
+    _configCacheAt = now;
+  }
+  return _configCache;
 }
 
 function validateConfig(body) {
@@ -243,6 +296,12 @@ const state = {
   frame_gap_mean_ms: 0,
   frame_gap_p95_ms:  0,
   startedAt:      null,
+  // Wall-clock of the last time bytes_received actually moved. The dashboard's
+  // signal chain needs to tell "bulk data flowing" from "bulk endpoint stalled",
+  // and usb_data is a bare boolean with no age. Timing it here rather than in
+  // the browser keeps the measurement on the 2s cadence the pipeline actually
+  // posts at, instead of the 500ms rebroadcast (see the stats interval below).
+  bytes_at:       0,
   // Hardware Telemetry
   soc_temp:              null,
   thermal_state:         'NORMAL',
@@ -304,13 +363,87 @@ internalApp.post('/internal/status', (req, res) => {
   if (typeof body.fps === 'number')            state.fps            = body.fps;
   if (typeof body.bitrate_kbps === 'number')   state.bitrate_kbps   = body.bitrate_kbps;
   if (typeof body.resolution === 'string')     state.resolution     = body.resolution;
-  if (typeof body.bytes_received === 'number') state.bytes_received = body.bytes_received;
+  if (typeof body.bytes_received === 'number') {
+    if (body.bytes_received !== state.bytes_received) state.bytes_at = Date.now();
+    state.bytes_received = body.bytes_received;
+  }
   if (typeof body.dropped_frames === 'number') state.dropped_frames = body.dropped_frames;
   if (typeof body.latency_ms === 'number')     state.latency_ms     = body.latency_ms;
   if (typeof body.frame_gap_mean_ms === 'number') state.frame_gap_mean_ms = body.frame_gap_mean_ms;
   if (typeof body.frame_gap_p95_ms === 'number')  state.frame_gap_p95_ms  = body.frame_gap_p95_ms;
   res.json({ok:true});
 });
+
+// Per-output connection state, reported by whichever process actually owns the
+// sink. SRT/RTMP live in capture/stream_output.py — a deliberately separate
+// systemd unit, because a stalled rtmpsink was proven to hang the whole tee and
+// take HDMI down with it (see the module docstring there). NDI lives in
+// capture/pipeline.py. Neither had any channel back here, so the dashboard
+// could never say *why* an output was down.
+//
+// Reports are advisory and expire: a reporter that dies stops refreshing its
+// entry, and buildOutputs() falls back to deriving state from config rather
+// than showing a stale "up" for a process that is gone.
+const OUTPUT_REPORT_TTL_MS = 8000;
+const outputReports = new Map(); // id -> { state, detail, bitrate_kbps, retry, at }
+
+internalApp.post('/internal/output-status', (req, res) => {
+  const { id, state: st, detail, bitrate_kbps, retry } = req.body || {};
+  if (!['srt', 'rtmp', 'ndi'].includes(id)) {
+    return res.status(400).json({ error: 'unknown output id' });
+  }
+  if (!['up', 'connecting', 'retrying', 'failed', 'off'].includes(st)) {
+    return res.status(400).json({ error: 'unknown output state' });
+  }
+  outputReports.set(id, {
+    state: st,
+    detail: typeof detail === 'string' ? detail.slice(0, 120) : '',
+    bitrate_kbps: typeof bitrate_kbps === 'number' ? bitrate_kbps : undefined,
+    retry: typeof retry === 'number' ? retry : undefined,
+    at: Date.now(),
+  });
+  res.json({ ok: true });
+});
+
+// The stats payload's outputs[]. Prefers a live report; falls back to what the
+// config plus pipeline liveness can honestly support. The fallback can say
+// "enabled but we don't know if it connected" — it must never invent a reason.
+function buildOutputs(cfg) {
+  const live = state.pipeline_status === 'live';
+  const now = Date.now();
+
+  const defs = [
+    { id: 'srt',  enabled: !!cfg.srt_enabled,  detail: cfg.srt_url  || '' },
+    { id: 'rtmp', enabled: !!cfg.rtmp_enabled, detail: cfg.rtmp_url || '' },
+    { id: 'ndi',  enabled: !!cfg.ndi_enabled,  detail: cfg.ndi_name || 'FPVLink' },
+  ];
+
+  return defs.map((def) => {
+    if (!def.enabled) {
+      return { id: def.id, enabled: false, state: 'off', detail: 'disabled', reported: false };
+    }
+    const rep = outputReports.get(def.id);
+    if (rep && now - rep.at < OUTPUT_REPORT_TTL_MS) {
+      return {
+        id: def.id,
+        enabled: true,
+        state: rep.state,
+        detail: rep.detail || def.detail,
+        bitrate_kbps: rep.bitrate_kbps,
+        retry: rep.retry,
+        reported: true,
+      };
+    }
+    // No live reporter. Enabled + pipeline live is the most we can claim.
+    return {
+      id: def.id,
+      enabled: true,
+      state: live ? 'up' : 'idle',
+      detail: def.detail,
+      reported: false,
+    };
+  });
+}
 if (require.main === module) {
   internalApp.listen(8081, '127.0.0.1', () => {
     logger.info('Internal API listening on 127.0.0.1:8081');
@@ -434,44 +567,6 @@ async function killProcessAsync(proc) {
   });
 }
 
-function parseStatLine(line) {
-  let updated = false;
-
-  if (line.includes('[STATS]')) {
-    try {
-      const jsonStr = line.substring(line.indexOf('{'));
-      const stats = JSON.parse(jsonStr);
-      // We only merge valid fields
-      if (stats.fps !== undefined) state.fps = stats.fps;
-      if (stats.bitrate_kbps !== undefined) state.bitrate_kbps = stats.bitrate_kbps;
-      if (stats.latency_ms !== undefined) state.latency_ms = stats.latency_ms;
-      if (stats.dropped_frames !== undefined) state.dropped_frames = stats.dropped_frames;
-      if (stats.resolution !== undefined) state.resolution = stats.resolution;
-      return true;
-    } catch (e) {
-      logger.error(`Failed to parse stats JSON: ${e.message}`);
-      return false;
-    }
-  }
-
-  const patterns = {
-    fps:            /fps=([\d.]+)/,
-    bitrate_kbps:   /bitrate_kbps=([\d.]+)/,
-    latency_ms:     /latency_ms=([\d.]+)/,
-    bytes_received: /bytes=([\d]+)/,
-    usb_status:     /usb=(connected|disconnected)/,
-  };
-
-  for (const [key, re] of Object.entries(patterns)) {
-    const m = line.match(re);
-    if (m) {
-      state[key] = key === 'usb_status' ? m[1] : parseFloat(m[1]);
-      updated = true;
-    }
-  }
-  return updated;
-}
-
 async function superviseCaptureLoop() {
   if (captureLoopActive) return;
   captureLoopActive = true;
@@ -585,10 +680,7 @@ function spawnCapture(cfg) {
 
   proc.on('close', (code) => {
     logger.warn(`Capture process exited with code ${code}`);
-    if (state.streaming) {
-      state.usb_status = 'disconnected';
-      state.streaming  = false;
-    }
+    state.usb_status = 'disconnected';
     // Capture process is gone — its in-process USB state is meaningless now.
     state.usb_link = false;
     state.usb_data = false;
@@ -606,7 +698,19 @@ function spawnCapture(cfg) {
 // (pipeline and standby are now managed by systemd)
 const app = express();
 app.use(express.json());
-app.use(express.static(WEB_DIR));
+// Without explicit headers the browser applies heuristic freshness and can keep
+// serving a previous dashboard build after a deploy — the operator then debugs
+// a UI that is not the one on the device. Markup and code always revalidate
+// (ETag keeps that cheap on a LAN); fonts are content-stable, so they don't.
+app.use(express.static(WEB_DIR, {
+  setHeaders(res, filePath) {
+    if (/\.(woff2?|ttf)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
+}));
 
 // GET /api/status
 app.get('/api/status', (req, res) => {
@@ -622,6 +726,44 @@ app.get('/api/status', (req, res) => {
     uptime_seconds: uptimeSeconds(),
     device_name:    cfg.device_name,
     firmware_version: cfg.firmware_version,
+  });
+});
+
+// The USB gadget's vendor:product, read from configfs. This is the identity the
+// goggles actually enumerated as, which is the thing worth showing on a support
+// call — not a value we configured and hope took effect.
+function usbGadgetId() {
+  const base = '/sys/kernel/config/usb_gadget';
+  try {
+    for (const name of fs.readdirSync(base)) {
+      try {
+        const vid = fs.readFileSync(path.join(base, name, 'idVendor'), 'utf8').trim();
+        const pid = fs.readFileSync(path.join(base, name, 'idProduct'), 'utf8').trim();
+        if (vid && pid) return `${vid.replace(/^0x/, '')}:${pid.replace(/^0x/, '')}`;
+      } catch { /* try the next gadget */ }
+    }
+  } catch { /* no configfs — dev machine */ }
+  return null;
+}
+
+// GET /api/system — the System tab's Device list. Facts that are set once and
+// then only ever read, so this is a plain request rather than another field on
+// the 2 Hz stats broadcast.
+app.get('/api/system', (req, res) => {
+  const cfg = readConfig();
+  res.json({
+    host:             os.hostname(),
+    firmware_version: cfg.firmware_version,
+    kernel:           `${os.release()}`,
+    host_uptime_seconds: Math.floor(os.uptime()),
+    usb_device:       usbGadgetId(),
+    source_format:    state.resolution && state.resolution !== '—'
+      ? `${state.resolution}${state.fps ? '@' + Math.round(state.fps) : ''} H.264`
+      : null,
+    session_bytes:    state.bytes_received,
+    storage_free_gb:  state.storage_free_gb,
+    storage_total_gb: state.storage_total_gb,
+    soc_temp:         state.soc_temp,
   });
 });
 
@@ -728,7 +870,8 @@ app.post('/api/lut-upload', upload.single('lutFile'), (req, res) => {
 
     // Basic file validation (check for LUT_3D_SIZE)
     const content = fs.readFileSync(req.file.path, 'utf8');
-    if (!content.includes('LUT_3D_SIZE')) {
+    const gridSize = parseLutSize(content);
+    if (gridSize === null) {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Invalid 3D LUT file' });
     }
@@ -738,7 +881,9 @@ app.post('/api/lut-upload', upload.single('lutFile'), (req, res) => {
       id,
       original_filename: req.file.originalname,
       display_name: req.body.displayName || req.file.originalname,
-      uploaded_at: new Date().toISOString()
+      uploaded_at: new Date().toISOString(),
+      size_bytes: req.file.size,
+      lut_3d_size: gridSize,
     };
 
     manifest.push(newLut);
@@ -979,8 +1124,13 @@ setInterval(() => {
     usb_data:       state.usb_data,
     usb_stream:     state.usb_stream,
     bytes_received: state.bytes_received,
+    // Age of the last bytes_received change. The chain's "Bulk data" node reads
+    // this to distinguish flowing from stalled; null means nothing has ever
+    // arrived, which is a different condition from "arrived then stopped".
+    bytes_age_ms:   state.bytes_at ? Date.now() - state.bytes_at : null,
     uptime_seconds: uptimeSeconds(),
-    
+    outputs:        buildOutputs(cachedConfig()),
+
     // Hardware Telemetry
     soc_temp:              state.soc_temp,
     thermal_state:         state.thermal_state,
@@ -997,7 +1147,11 @@ setInterval(() => {
     pipeline_status: state.pipeline_status,
   });
   
-  if (state.streaming && sessionLogStream) {
+  // Gated on the session stream existing, not on the old `state.streaming` flag
+  // — which nothing ever set to true, so per-session stats were never once
+  // written to disk. The stream is opened when the pipeline goes live and
+  // closed 5s after it leaves, which is exactly the window we want samples for.
+  if (sessionLogStream) {
     sessionLogTick++;
     if (sessionLogTick >= 4) { // Log to disk every 2 seconds
       sessionLogTick = 0;
@@ -1039,7 +1193,10 @@ if (require.main === module) {
 function shutdown(signal) {
   logger.info(`Received ${signal}, shutting down...`);
   (async () => {
-    if (state.streaming && !isTransitioning) await disableCapture();
+    // Was `state.streaming && !isTransitioning`: the first is never set, and
+    // the second was never declared at all — so this line threw a
+    // ReferenceError on every SIGTERM and capture was never actually stopped.
+    if (state.capture_enabled) await disableCapture();
     if (sessionLogStream) {
       try { sessionLogStream.end(); } catch (e) {}
       sessionLogStream = null;
@@ -1078,5 +1235,8 @@ if (require.main === module) {
 
 module.exports = {
   state,
-  validateConfig
+  validateConfig,
+  buildOutputs,
+  parseLutSize,
+  outputReports,
 };
