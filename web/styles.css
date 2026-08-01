@@ -352,14 +352,42 @@ a:hover { color: #67e8f9; }
 }
 
 .mon-left  { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.mon-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Stretches to the left column's height so the Recent card can absorb the
+   leftover space instead of leaving a void under the action button. */
+.mon-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  align-self: stretch;
+}
+
+.mon-right .recent {
+  flex: 1;
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+}
+
+.mon-right .recent .recent-list { flex: 1; min-height: 0; overflow: hidden; }
 
 /* ────────────────────────────────────────────
    6.1 Preview + HUD
 ──────────────────────────────────────────── */
+/* 16:9, capped by height: on a wide monitor an uncapped preview becomes ~700px
+   of mostly-black and pushes the chain and traces below the fold — the opposite
+   of "Monitor fits one screen".
+   max-width pins the ratio to that cap so the box never grows wider than 16:9.
+   Without it the frame letterboxes internally, and black bars inside a bordered
+   card read as a broken image rather than as a deliberate size. */
 .preview {
   position: relative;
+  width: 100%;
   aspect-ratio: 16 / 9;
+  max-height: 54vh;
+  max-width: calc(54vh * 16 / 9);
+  align-self: center;
   border-radius: var(--r-lg);
   overflow: hidden;
   border: 1px solid var(--line);
@@ -389,6 +417,11 @@ a:hover { color: #67e8f9; }
   gap: 6px;
   text-align: center;
 }
+
+/* Required: a class selector's display:flex outranks the UA sheet's
+   [hidden] { display: none }, so without this the placeholder keeps painting on
+   top of live frames once they start arriving. */
+.preview-empty[hidden] { display: none; }
 
 .preview-empty-title {
   font: 600 11px/1.3 var(--font-mono);
@@ -448,6 +481,10 @@ a:hover { color: #67e8f9; }
 .state-badge.is-nosignal .state-badge-dot { background: var(--err); }
 .state-badge.is-nosignal .state-badge-word { color: var(--err); }
 
+/* The scrim has to actually suppress what is behind it: the standby card is a
+   full-frame image with its own STANDBY watermark sitting exactly where the
+   FRAME RATE metric lands. A short, fast-ramping gradient left the two legible
+   on top of each other. */
 .hud {
   position: absolute;
   bottom: 0;
@@ -456,8 +493,12 @@ a:hover { color: #67e8f9; }
   display: flex;
   align-items: flex-end;
   gap: 24px;
-  padding: 28px 14px 12px;
-  background: linear-gradient(to top, rgba(6,7,9,.92), transparent);
+  padding: 52px 14px 12px;
+  background: linear-gradient(to top,
+    rgba(6,7,9,.97) 0%,
+    rgba(6,7,9,.97) 58%,   /* solid across the band the metrics occupy */
+    rgba(6,7,9,.72) 80%,
+    transparent     100%);
   pointer-events: none;
 }
 
@@ -1219,6 +1260,16 @@ select.input option { background: #14161b; color: var(--text); }
    The prototype shipped with no media queries at all and broke below ~900px.
    Two real breakpoints: a mechanical collapse, then the field case.
 ──────────────────────────────────────────── */
+/* Large monitors: a 1240px column stranded in the middle of a 2560px screen is
+   the biggest source of wasted space. Widen the shell and the sidebar with it,
+   rather than letting the preview absorb everything. */
+@media (min-width: 1500px) {
+  .main { max-width: 1440px; }
+  .mon  { grid-template-columns: minmax(0, 1fr) 360px; }
+  .cfg  { grid-template-columns: minmax(0, 1fr) 360px; }
+}
+
+
 @media (max-width: 1100px) {
   .mon, .cfg { grid-template-columns: minmax(0, 1fr); }
 

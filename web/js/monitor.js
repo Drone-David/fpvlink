@@ -448,11 +448,27 @@ function bindAction() {
 // ─────────────────────────────────────────────
 // Recent log peek
 // ─────────────────────────────────────────────
+const RECENT_LINE_H = 20;   // 10px/1.4 line + 6px gap
+const RECENT_MIN    = 4;
+const RECENT_MAX    = 14;
+
+/**
+ * The card stretches to fill whatever the left column leaves over, so the line
+ * count follows the space rather than being fixed at four. Measuring the list
+ * is safe despite it holding the lines: it is a flex:1 child with
+ * overflow:hidden, so its height comes from the column, not from its content.
+ */
+function recentCapacity(el) {
+  const h = el.clientHeight;
+  if (!h) return RECENT_MIN;
+  return Math.max(RECENT_MIN, Math.min(RECENT_MAX, Math.floor(h / RECENT_LINE_H)));
+}
+
 function renderRecent() {
   const el = $('recentList');
   if (!el) return;
 
-  const lines = store.logs.slice(0, 4);
+  const lines = store.logs.slice(0, recentCapacity(el));
   if (!lines.length) {
     el.innerHTML = '<div class="recent-line lv-debug">No log output yet.</div>';
     return;
