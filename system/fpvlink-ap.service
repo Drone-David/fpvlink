@@ -1,0 +1,45 @@
+[Unit]
+Description=FPVLink Field Access Point (2.4GHz, only when no Ethernet)
+Documentation=file:///opt/fpvlink/docs/wifi-ap-research.md
+After=network.target systemd-networkd.service
+Wants=network.target
+
+# Deliberately NOT Requires= on the wlan0 device unit. The adapter being
+# unplugged is a normal state for this box, and the guard below already
+# handles it by skipping rather than failing.
+#
+# This does not conflict with the distro hostapd.service, which setup leaves
+# masked on purpose — one hostapd, one config, no ambiguity about which is
+# running.
+
+[Service]
+Type=simple
+
+# Decides bench-vs-field and skips the unit cleanly on the bench. See
+# scripts/fpvlink-ap-guard.sh for why this is ExecCondition and not
+# ExecStartPre — the short version is that "do not start" is a correct
+# outcome here and must not leave a failed unit behind.
+ExecCondition=/opt/fpvlink/scripts/fpvlink-ap-guard.sh
+
+ExecStart=/usr/sbin/hostapd /etc/hostapd/fpvlink.conf
+
+# hostapd reloads its config on SIGHUP, which is cheaper than a full restart
+# and does not kick associated clients for a channel-only change.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# on-failure, not always: if the guard skips the unit there is nothing to
+# restart, and a radio that genuinely cannot come up should be visible as a
+# failure rather than looping quietly forever.
+Restart=on-failure
+RestartSec=5
+
+# hostapd needs to configure the radio, so it runs as root. This is the same
+# reason the installed fpvlink.service runs as root rather than the hardened
+# template — device access.
+User=root
+Group=root
+
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

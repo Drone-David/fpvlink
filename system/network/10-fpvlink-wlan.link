@@ -1,0 +1,30 @@
+# FPVLink WiFi adapter — give the USB adapter a stable name.
+#
+# The problem this solves: the kernel hands USB WiFi adapters a name derived
+# from their MAC address (/usr/lib/systemd/network/73-usb-net-by-mac.link),
+# so the TP-Link Archer T3U Nano came up as "wlx8c86dda7a31b". Every config
+# that names that interface — hostapd, the .network file, the AP guard —
+# would then be pinned to one physical adapter. Swap the stick, or build a
+# second box, and everything breaks at once with a confusing error (hostapd
+# just reports an unknown interface).
+#
+# So match on the USB vendor/product ID instead of the MAC, and always call
+# it wlan0.
+#
+# Why the filename starts with 10-: systemd-udevd applies the FIRST .link
+# file that matches, sorted by filename across /etc, /run and /lib. The
+# stock 73-usb-net-by-mac.link is what assigns the wlx<mac> name, so this
+# has to sort ahead of 73-. Do not rename it to anything above 73.
+#
+# 2357:012e is the Archer T3U Nano (RTL8812BU). Other TP-Link AC1300 sticks
+# have different product IDs — add them here rather than loosening the match
+# to the whole vendor, so a second adapter can never take this name.
+#
+# To revert: rm /etc/systemd/network/10-fpvlink-wlan.link
+#            udevadm control --reload && reboot
+
+[Match]
+Property=ID_VENDOR_ID=2357 ID_MODEL_ID=012e
+
+[Link]
+Name=wlan0
