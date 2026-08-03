@@ -295,6 +295,42 @@ Also confirmed: the bench/field guard skips the unit cleanly with
 re-running the setup script while the AP is serving clients is a clean no-op
 that does not drop them.
 
+### 8.2 Survives a reboot
+
+The three boot-determinism mechanisms (§2, §5, and the guard) are the whole
+point of this arrangement and none of them means anything until a reboot proves
+it. Verified 2026-08-03:
+
+```
+wlan0 -> rtw_8822bu            name survived; mainline driver bound
+88x2bu NOT loaded              blacklist held; the race is gone
+Result=exec-condition          guard skipped the unit, not in --failed
+[ap-guard] enP4p65s0 has carrier after 1s — on the bench, skipping AP
+```
+
+The field path was then exercised without unplugging anything, by pointing
+`FPVLINK_SERVICE_IF` at the LAN port so the guard sees no uplink:
+
+```
+[ap-guard] no Ethernet carrier after 25s — in the field, starting AP
+hostapd: UNINITIALIZED -> COUNTRY_UPDATE -> ENABLED -> AP-ENABLED
+country 00  ->  country US: DFS-FCC
+```
+
+That last line is §4 working as designed: hostapd applies the regulatory domain
+itself at startup, which is why there is no separate `iw reg set` unit to race.
+
+One piece of harmless log noise to expect, so it does not send anyone hunting:
+
+```
+wlan0: Found matching .network file, based on potentially unpredictable
+interface name: /etc/systemd/network/06-fpvlink-ap.network
+```
+
+systemd warns whenever a `.network` matches on a kernel-style name. Here the
+name is not unpredictable — `10-fpvlink-wlan.link` pins it by USB ID (§5) — so
+the warning is inapplicable rather than wrong.
+
 ## 9. Test state left on the box
 
 Installed and left in place: **`hostapd` 2:2.11-0ubuntu5**. Its systemd unit is
