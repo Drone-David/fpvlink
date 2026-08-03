@@ -113,6 +113,13 @@
       "enabled": false,
       "name": "FPVLink",
       "_name_comment": "NDI source name shown to receivers on the network."
+    },
+
+    "standby": {
+      "_comment": "The card shown on HDMI whenever there is no live signal. Changing this restarts the pipeline to apply (~3s standby blip), so change it before the drone is live.",
+      "active_card": "grounded",
+      "_active_card_comment": "One of: 'grounded' (branded still), 'grounded_anim' (the same card animated), 'bars' (SMPTE-style test pattern), 'black' (sync black). Ids are defined in STANDBY_CARDS in capture/pipeline.py; an unknown id falls back to 'grounded'.",
+      "_animated_comment": "'grounded_anim' is a 60-frame 6s loop at 10fps from capture/cards/anim/grounded/. Motion is a liveness signal: a still card looks identical to a crashed box on a downstream monitor. It costs ~6% of one core continuously (the standby branch runs even while live, which is what keeps the fallback to standby instant). If its frames are missing or gapped the pipeline logs why and falls back to 'grounded'."
     }
   },
 

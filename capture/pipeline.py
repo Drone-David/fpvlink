@@ -53,6 +53,11 @@ STANDBY_CARDS = {
     "grounded": {"kind": "still", "path": os.path.join(_CAPTURE_DIR, "standby.jpg")},
     "bars":     {"kind": "still", "path": os.path.join(_CARDS_DIR, "bars.jpg")},
     "black":    {"kind": "still", "path": os.path.join(_CARDS_DIR, "black.jpg")},
+    # Animated Grounded: a 60-frame 6s loop at STANDBY_FPS. Motion is the point
+    # — a still card is indistinguishable from a crashed box on a downstream
+    # monitor, so the moving element is a liveness signal, not decoration.
+    "grounded_anim": {"kind": "sequence",
+                      "path": os.path.join(_CARDS_DIR, "anim", "grounded")},
 }
 
 # multifilesrc reads frames as location % index, starting at SEQUENCE_START_INDEX.

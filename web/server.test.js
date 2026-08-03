@@ -30,6 +30,16 @@ test('validateConfig rejects an unknown standby_card', (t) => {
   assert.match(errors[0], /standby_card must be one of/);
 });
 
+test('validateConfig accepts every card the pipeline can render', (t) => {
+  // These ids must match STANDBY_CARDS in capture/pipeline.py. A card the
+  // validator rejects can't be selected at all; one it accepts but the
+  // pipeline doesn't know silently falls back to the default.
+  for (const card of ['grounded', 'grounded_anim', 'bars', 'black']) {
+    assert.deepStrictEqual(server.validateConfig({ standby_card: card }), [],
+      `expected ${card} to be accepted`);
+  }
+});
+
 test('validateConfig enforces boolean flags', (t) => {
   const errors = server.validateConfig({ srt_enabled: 'yes', ndi_enabled: true });
   assert.deepStrictEqual(errors, ['srt_enabled must be a boolean']);
