@@ -152,6 +152,36 @@ def build_lut_segment(enabled, active_id):
     # showing — see set_lut_active().
     return f'! fpvlut3d name={LUT_ELEMENT_NAME} file="{safe}" '
 
+# Caps the standby branch normalises to. Everything downstream of the
+# input-selector sees these no matter which card is showing, so the branch can
+# be rebuilt freely without touching the rest of the graph.
+STANDBY_CAPS = "video/x-raw,format=NV12,width=1920,height=1080,framerate=10/1"
+
+
+def build_standby_segment(image_path):
+    """Return the GStreamer fragment for the standby branch, ending at `sel.`.
+
+    Split out of build_pipeline_string so the parse-failure fallback can rebuild
+    this branch with the known-good default card instead of reusing whatever was
+    configured — see the note in build_pipeline_string about why this branch is
+    reset rather than blanked.
+
+    imagefreeze is-live=true is load-bearing, not decoration: it is the only
+    thing pacing this branch, because the display's kmssink runs sync=false.
+    Anything that replaces it has to bring its own pacing (clocksync or
+    identity sync=true) or the branch runs at decode speed — measured at 91fps
+    and a whole core when that was got wrong.
+    """
+    safe = image_path.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        f'filesrc location="{safe}"\n'
+        f"  ! jpegdec ! imagefreeze is-live=true\n"
+        f"  ! videoconvert ! videoscale ! videorate\n"
+        f"  ! {STANDBY_CAPS}\n"
+        f"  ! sel.\n"
+    )
+
+
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
 KMS_CONNECTOR_ID = 217
 # CRTC 89 exposes three usable planes: 57/178 are RGB-only (would force a
@@ -257,14 +287,21 @@ _last_frame_arrival_mono = None
 # whatever is on HDMI (live feed, or the standby card during signal loss — which
 # doubles as a "no signal" indicator), so it's unconditional: no toggle, hence
 # no restart blip to turn it on/off mid-event.
-def build_pipeline_string(lut_segment, ndi_branch, preview_branch):
+def build_pipeline_string(standby_segment, lut_segment, ndi_branch, preview_branch):
     """Assemble the full pipeline description.
 
-    Called once with the real optional segments. If that fails to parse, called
-    again with all three blank as a last-resort fallback (see the parse_launch
-    try/except below) — a single bad LUT/NDI/preview segment must never leave
-    HDMI dark. (Preview is normally always-on, but it's still passed as a
-    parameter precisely so the fallback can strip it if it's ever the culprit.)
+    Called once with the real segments. If that fails to parse, called again as
+    a last-resort fallback (see the parse_launch try/except below) with
+    LUT/NDI/preview blank and the standby branch reset to the default card — a
+    single bad segment must never leave HDMI dark. (Preview is normally
+    always-on, but it's still passed as a parameter precisely so the fallback
+    can strip it if it's ever the culprit.)
+
+    Note the standby branch is RESET, not blanked, unlike the other three:
+    blanking it would leave the input-selector with a single pad, and the
+    sel.get_static_pad("sink_1") lookup below would come back None and take the
+    process down — the exact outcome the fallback exists to prevent. There is
+    always a standby branch; the only question is which card is in it.
     """
     return f"""
 appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream
@@ -273,12 +310,7 @@ appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,st
   ! video/x-raw,format=NV12
   ! input-selector name=sel sync-streams=false
 
-filesrc location={STANDBY_IMAGE}
-  ! jpegdec ! imagefreeze is-live=true
-  ! videoconvert ! videoscale ! videorate
-  ! video/x-raw,format=NV12,width=1920,height=1080,framerate=10/1
-  ! sel.
-
+{standby_segment}
 sel. ! tee name=t
 t. ! queue name=dispq max-size-buffers={DISPQ_BUFFERS} leaky=downstream {lut_segment}! kmssink name=hdmisink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} can-scale=true sync=false skip-vsync=true
 {ndi_branch}
@@ -286,10 +318,14 @@ t. ! queue name=dispq max-size-buffers={DISPQ_BUFFERS} leaky=downstream {lut_seg
 """
 
 # Selectable standby/test card (Grounded/Bars/Black) — resolved to a real,
-# existing file path up front so build_pipeline_string's filesrc can never
-# point at something missing.
+# existing file path up front so the standby filesrc can never point at
+# something missing.
 standby_card_id = load_standby_config()
 STANDBY_IMAGE = resolve_standby_image(standby_card_id)
+STANDBY_SEGMENT = build_standby_segment(STANDBY_IMAGE)
+# Known-good standby branch for the parse-failure fallback below: always the
+# default card, independent of whatever happens to be configured.
+DEFAULT_STANDBY_SEGMENT = build_standby_segment(STANDBY_CARDS[DEFAULT_STANDBY_CARD])
 if standby_card_id != DEFAULT_STANDBY_CARD:
     print(f"[Pipeline] Standby card: '{standby_card_id}' ({STANDBY_IMAGE})", flush=True)
 
@@ -322,7 +358,8 @@ PREVIEW_BRANCH = (
     "! jpegenc quality=40 ! udpsink host=127.0.0.1 port=9002 sync=false"
 )
 
-PIPELINE_STRING = build_pipeline_string(LUT_SEGMENT, NDI_BRANCH, PREVIEW_BRANCH)
+PIPELINE_STRING = build_pipeline_string(
+    STANDBY_SEGMENT, LUT_SEGMENT, NDI_BRANCH, PREVIEW_BRANCH)
 
 try:
     pipeline = Gst.parse_launch(PIPELINE_STRING)
@@ -332,9 +369,10 @@ except GLib.Error as e:
     # ones we didn't anticipate) as recoverable, not fatal: drop every optional
     # branch and keep HDMI alive rather than crash-loop on a bad segment.
     print(f"[Pipeline] FATAL: pipeline failed to parse with configured outputs "
-          f"({e}) — retrying with LUT/NDI/preview disabled so HDMI stays up. "
+          f"({e}) — retrying with LUT/NDI/preview disabled and the standby card "
+          f"reset to '{DEFAULT_STANDBY_CARD}' so HDMI stays up. "
           f"Check those settings in the dashboard.", flush=True)
-    PIPELINE_STRING = build_pipeline_string("", "", "")
+    PIPELINE_STRING = build_pipeline_string(DEFAULT_STANDBY_SEGMENT, "", "", "")
     pipeline = Gst.parse_launch(PIPELINE_STRING)
 
 live_src = pipeline.get_by_name("live")
