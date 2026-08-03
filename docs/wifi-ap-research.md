@@ -102,22 +102,66 @@ Avoid the **DFS** channels (52–144). They are listed as beacon-capable but
 require radar detection, which `rtw88` does not implement; hostapd will either
 refuse to start or sit in CAC forever.
 
-### 4.1 Channel choice is an FPV problem, not a WiFi problem
+### 4.1 Band choice is an FPV problem, not a WiFi problem
 
 This is specific to what this box is for, and it overrides the usual advice.
 
-The high 5 GHz channels — **149–165 (5745–5825 MHz)** — are the most tempting
-ones, because `US` allows 30 dBm there versus 23 dBm on UNII-1. **Do not use
-them.** That band is exactly where DJI's FPV video downlink lives
-(5.725–5.850 GHz). Parking a beaconing access point in the middle of the drone's
-video band, on the very box whose job is receiving that video, invites the one
-failure mode nobody wants to debug at a flying field.
+**The AP goes on 2.4 GHz. The whole 5 GHz band is reserved for DJI video.**
 
-DJI O3/O4 also uses 2.4 GHz, which rules that band out for the same reason.
+The instinct is to put the AP on 5 GHz — it is less congested, and `US` allows
+30 dBm on channels 149–165 versus 23 dBm on UNII-1. That instinct is wrong here.
+5.725–5.850 GHz is exactly where DJI's FPV video downlink lives, and channels
+149–165 (5745–5825 MHz) sit directly inside it. Beaconing there, on the very box
+whose job is receiving that video, invites the one failure mode nobody wants to
+debug at a flying field. Treat all of 5 GHz as spoken for rather than reasoning
+channel by channel — it costs nothing and removes a whole class of field
+problem.
 
-→ **Use UNII-1: channel 36, 40, 44 or 48 (5180–5240 MHz), 23 dBm.** No DFS, no
-radar wait, and clear of both DJI bands. Range at 23 dBm is more than enough for
-a phone standing next to the box.
+→ **Use 2.4 GHz, `hw_mode=g`, channel 1, 6 or 11, 30 dBm.** This assumes the
+goggles link is locked to 5.8 GHz; if a DJI system is ever run in a 2.4 GHz
+mode on the same site, the two will contend and the AP should be the thing that
+moves.
+
+DFS channels (52–144) are moot under this plan, but for the record they were
+never viable: `rtw88` implements no radar detection, so hostapd would refuse to
+start or sit in CAC indefinitely.
+
+### 4.2 Verified working
+
+Settled on the live box 2026-08-02 — this was §8's open question, and it passed:
+
+```
+timeout 20 hostapd -dd /tmp/hostapd-test.conf     # hw_mode=g, channel 6, WPA2
+
+wlx8c86dda7a31b: AP-ENABLED
+wlx8c86dda7a31b: Setup of interface done.
+        type AP
+        channel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz
+        txpower 30.00 dBm
+```
+
+`rtw88_8822bu` beacons over USB with no nl80211 errors, and tears down cleanly.
+
+A real client then completed the full association path against it — which is a
+separate failure mode from beaconing, and the one rtw88 was most likely to fall
+down on:
+
+```
+STA f6:55:ed:c3:53:cd IEEE 802.11: authenticated
+STA f6:55:ed:c3:53:cd IEEE 802.11: associated (aid 1)
+AP-STA-CONNECTED f6:55:ed:c3:53:cd
+STA f6:55:ed:c3:53:cd WPA: pairwise key handshake completed (RSN)
+
+signal: -39 dBm      tx bitrate: 130.0 MBit/s MCS 15      rx bitrate: 24.0 MBit/s
+```
+
+WPA2-PSK negotiates, 802.11n rates come up, and the link stays associated. The
+mainline mac80211 driver is confirmed as the path — the vendor `88x2bu` fallback
+in §2 is insurance, not a likely destination.
+
+What this does **not** yet prove is DHCP and reaching the dashboard over the AP.
+Both are our own configuration (§6) rather than driver behaviour, so the risk
+there is ordinary.
 
 ## 5. The interface name will not survive a swap
 
@@ -160,7 +204,7 @@ Mirrors the existing `05-network.sh` layout and house style:
 | `setup/07-wifi-ap.sh` | idempotent installer + verifier, run as root on the box |
 | `system/network/10-fpvlink-wlan.link` | pin `wlan0` by USB ID, not MAC (§5) |
 | `system/network/06-fpvlink-ap.network` | static IP + networkd DHCP server (§6) |
-| `system/network/hostapd-fpvlink.conf` | SSID, WPA2, `country_code`, UNII-1 channel (§4) |
+| `system/network/hostapd-fpvlink.conf` | SSID, WPA2, `country_code`, 2.4 GHz channel (§4) |
 | `/etc/modprobe.d/fpvlink-wifi.conf` | blacklist `88x2bu` so `rtw88` always wins (§2) |
 
 The `06-` prefix on the `.network` file matters for the same reason `05-` does
@@ -174,17 +218,23 @@ the config schema slot exists and does not need inventing.
 
 ## 8. Open questions before implementing
 
-1. **Does `rtw88_8822bu` actually beacon on this silicon?** §3 proves the driver
-   advertises AP mode; it does not prove USB AP works end to end. rtw88's USB AP
-   support is comparatively young. This is the one genuine unknown, and it is
-   cheap to settle: install hostapd, run it in the foreground on channel 36, and
-   see whether a phone sees the SSID. Everything else in this document is
-   already measured. If it fails, the fallback is the vendor `88x2bu` driver
-   with its own AP implementation — which is why §2 says blacklist it rather
-   than remove it.
+1. ~~**Does `rtw88_8822bu` actually beacon on this silicon?**~~ **Settled — yes.**
+   See §4.2. Driver choice is no longer a risk.
 2. **Regulatory country** — this assumes `US`. It must match where the box is
-   actually flown; the channel plan in §4.1 changes under other domains.
+   actually flown. Under the 2.4 GHz plan the practical effect is small
+   (channels 1–11 exist in every common domain; 12–13 vary), so this is a
+   correctness matter rather than a functional one.
 3. **Should the AP be always-on or toggled?** Always-on is simpler. A dashboard
    toggle would follow the existing per-output pattern, but note that per-output
    state is cross-process here, and the AP cannot be a client simultaneously
    (§3), so a toggle can only mean on/off, never a mode switch.
+
+## 9. Test state left on the box
+
+Installed and left in place: **`hostapd` 2:2.11-0ubuntu5**. Its systemd unit is
+**masked** (`/etc/systemd/system/hostapd.service → /dev/null`) so it cannot
+autostart against a default config — unmask it when the real unit is written.
+
+Not persisted, and gone on reboot: `iw reg set US`, the manual
+`10.10.20.1/24` on the interface, and `/tmp/hostapd-test.conf`. No config under
+`/etc` was modified.
