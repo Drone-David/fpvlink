@@ -31,6 +31,22 @@ Wants=network-online.target
 # If USB gadget setup is managed by a separate unit, make it mandatory:
 # Requires=usb-gadget.target
 
+# ── Start rate limiting ───────────────────────────────────────────────────────
+# These MUST live in [Unit], not [Service] — systemd parses them per-unit, and
+# in [Service] it silently ignores them with
+#   Unknown key 'StartLimitIntervalSec' in section [Service], ignoring
+# leaving the manager defaults (5 starts / 10s) in force instead.
+#
+# 0 disables rate limiting entirely: this is a headless field device, so a
+# dashboard that keeps retrying beats one systemd has given up on. Restart=always
+# below is only meaningful if nothing here overrides it — with a limit in force,
+# a crash loop ends with the unit failed and the box dark until someone SSHes in.
+#
+# If you ever do want a ceiling, set BOTH keys here and mind the arithmetic:
+# RestartSec=3 means 10 attempts span ~30-40s, so StartLimitBurst=10 with
+# StartLimitIntervalSec=60 WOULD trip, where the 5/10s defaults do not.
+StartLimitIntervalSec=0
+
 [Service]
 # ── Process type ─────────────────────────────────────────────────────────────
 # 'simple': systemd considers the service started as soon as the process is
@@ -85,10 +101,9 @@ Restart=always
 # Wait 3 seconds between restart attempts to avoid tight crash loops.
 RestartSec=3
 
-# After 10 restart attempts within StartLimitIntervalSec, systemd gives up.
-# Comment out to restart indefinitely (useful for headless embedded devices).
-StartLimitBurst=10
-StartLimitIntervalSec=60
+# Start rate limiting is NOT configured here — StartLimitIntervalSec/
+# StartLimitBurst are [Unit] keys and are ignored in this section. See the
+# "Start rate limiting" block in [Unit] above.
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
 # No WatchdogSec: a systemd watchdog requires the process to send
