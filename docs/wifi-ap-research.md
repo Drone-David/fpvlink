@@ -183,9 +183,49 @@ here. Reuse it for the AP on a second subnet rather than introducing a second
 DHCP implementation:
 
 - static address on `wlan0`, e.g. `10.10.20.1/24`, pool `.50–.69`
-- `EmitRouter=no`, exactly as the service port does — so a phone that joins the
-  AP keeps its cellular connection for internet and only routes the box's subnet
-  over WiFi
+- **`EmitRouter=yes` and `EmitDNS=yes` with `DNS=10.10.20.1`** — see §6.1. The
+  first draft of this document said to copy the service port's
+  `EmitRouter=no`/`EmitDNS=no`. That was wrong, and it broke the AP entirely.
+
+### 6.1 Phones will not use an interface that lacks a route and a resolver
+
+This cost the most time of anything here, and it presented as a hardware
+problem, so it is worth stating plainly.
+
+The service port advertises no gateway and no DNS on purpose, so a cabled
+laptop keeps its own WiFi for internet. Copying that to the AP produced a phone
+that associated, took its DHCP lease, and **then sent nothing ever again** — no
+DNS, no captive-portal probe, not one TCP SYN — while showing no WiFi icon.
+Measured with `tcpdump`, the entire client conversation was:
+
+```
+DHCP Request from phone   ->   Reply, 10.10.20.58
+(nothing further, at all)
+```
+
+The instinct is to blame the radio, the driver or hostapd. None of them were at
+fault. With no default route and no resolver, iOS classifies the interface as
+unusable and declines to route anything over it — **including traffic to
+10.10.20.1, which is directly on-link and needs no gateway whatsoever.** A
+laptop uses such a network happily; a phone will not touch it.
+
+Advertising both fixed it immediately: same phone, same radio, dashboard loaded
+and the `/ws` WebSocket came up. The internet probe still fails — the box does
+not forward or NAT, and `captive.apple.com` gets no answer — and that turns out
+not to matter. The probe *failing* is fine. Having nothing to probe *with* is
+not.
+
+Two consequences worth carrying forward:
+
+- `DNS=10.10.20.1` requires something to actually answer there.
+  systemd-resolved binds `127.0.0.53` only until given a
+  `DNSStubListenerExtra=10.10.20.1` drop-in. An advertised resolver that never
+  answers behaves exactly like no resolver at all, so `setup/07-wifi-ap.sh`
+  verifies the listener rather than trusting it.
+- Route and DNS were changed in the same step, so which one was individually
+  load-bearing is **not** established — only that both together fix it. Worth
+  an experiment if the advertised default route ever proves costly (it is a
+  black hole for off-subnet traffic, since the box does not forward).
 
 **Does not need avahi changes.** avahi is already pinned to IPv4-only and
 advertises per-interface, so `fpvlink.local` will resolve over the AP as soon as
@@ -204,8 +244,11 @@ Mirrors the existing `05-network.sh` layout and house style:
 | `setup/07-wifi-ap.sh` | idempotent installer + verifier, run as root on the box |
 | `system/network/10-fpvlink-wlan.link` | pin `wlan0` by USB ID, not MAC (§5) |
 | `system/network/06-fpvlink-ap.network` | static IP + networkd DHCP server (§6) |
-| `system/network/hostapd-fpvlink.conf` | SSID, WPA2, `country_code`, 2.4 GHz channel (§4) |
-| `/etc/modprobe.d/fpvlink-wifi.conf` | blacklist `88x2bu` so `rtw88` always wins (§2) |
+| `system/hostapd-fpvlink.conf` | SSID, WPA2, `country_code`, 2.4 GHz channel (§4) |
+| `system/resolved-fpvlink-ap.conf` | `DNSStubListenerExtra` so DNS answers on the AP (§6.1) |
+| `system/fpvlink-ap.service` | unit, with the bench/field guard |
+| `scripts/fpvlink-ap-guard.sh` | `ExecCondition` deciding bench vs field |
+| `system/modprobe/fpvlink-wifi.conf` | blacklist `88x2bu` so `rtw88` always wins (§2) |
 
 The `06-` prefix on the `.network` file matters for the same reason `05-` does
 on the service port: it has to sort ahead of netplan's generated
@@ -228,6 +271,29 @@ the config schema slot exists and does not need inventing.
    toggle would follow the existing per-output pattern, but note that per-output
    state is cross-process here, and the AP cannot be a client simultaneously
    (§3), so a toggle can only mean on/off, never a mode switch.
+
+## 8.1 Verified end to end
+
+Implemented and confirmed working on the live box 2026-08-03, with a real
+phone as the client:
+
+```
+DHCP    Reply -> 10.10.20.58
+TCP     10.10.20.58 > 10.10.20.1.8080  Flags [S]
+HTTP    GET / HTTP/1.1  ->  HTTP/1.1 200 OK        (~23 KB, the dashboard)
+WS      GET /ws HTTP/1.1
+        ESTAB 10.10.20.1:8080 <-> 10.10.20.58:55806 (node)
+        tx bytes: 60,685,288    signal -47 dBm    117.0 MBit/s MCS 14
+```
+
+The WebSocket matters as much as the page: a dashboard that loads with a dead
+`/ws` shows every live value blank, which is a failure mode this project has
+already been bitten by once.
+
+Also confirmed: the bench/field guard skips the unit cleanly with
+`Result=exec-condition` and does **not** appear in `systemctl --failed`, and
+re-running the setup script while the AP is serving clients is a clean no-op
+that does not drop them.
 
 ## 9. Test state left on the box
 

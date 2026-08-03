@@ -1,0 +1,80 @@
+# FPVLink field access point — address and DHCP for the WiFi AP.
+#
+# This is the wireless twin of 05-fpvlink-service.network. That file makes the
+# box reachable when you can cable into it; this one makes it reachable at a
+# flying field, where there is no cable and no router to hand out addresses.
+#
+# hostapd does NOT do any of this. hostapd's job stops at the radio — it
+# authenticates clients and bridges them onto the interface. Giving the
+# interface an address and handing joined devices an IP is networkd's job,
+# and networkd already runs a DHCP server on the service port, so there is
+# no reason to add dnsmasq for a second one.
+#
+# Subnet is 10.10.20.0/24, deliberately adjacent to but distinct from the
+# service port's 10.10.10.0/24, so a laptop cabled into the service port and
+# a phone joined over WiFi never collide.
+#
+# Why the filename starts with 06-: same rule as 05- (first matching .network
+# by filename sort across /etc, /run and /lib wins). netplan's generated
+# 10-netplan-all-eth-interfaces.network matches "e*", which does not match
+# wlan0 today — but 06- keeps this file ahead of anything netplan may
+# generate later, and keeps the ordering story identical to the service port.
+#
+# To revert: rm /etc/systemd/network/06-fpvlink-ap.network
+#            networkctl reload && networkctl reconfigure wlan0
+
+[Match]
+Name=wlan0
+
+[Link]
+# Never let boot block waiting for the AP — in the field there is nothing to
+# wait for, and on the bench the AP is deliberately not running at all.
+RequiredForOnline=no
+
+[Network]
+Address=10.10.20.1/24
+DHCPServer=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+# Assign the address even before hostapd brings the radio up, so 10.10.20.1
+# is present the instant the first client associates rather than racing it.
+ConfigureWithoutCarrier=yes
+
+[DHCPServer]
+# A joined phone or laptop gets 10.10.20.50-69. Twenty is far more than the
+# handful of devices that will ever be on this at a field.
+PoolOffset=50
+PoolSize=20
+# Advertise a default route and a DNS server — and DO NOT "optimise" these
+# back to no/no, however tempting it looks.
+#
+# The service port next door uses EmitRouter=no/EmitDNS=no so a cabled laptop
+# keeps its own WiFi for internet. Copying that here was wrong, and it broke
+# the AP completely in a way that looked like a hardware fault.
+#
+# What actually happened, measured with tcpdump: the phone associated, got its
+# address, and then sent NOTHING EVER AGAIN. No DNS, no captive-portal probe,
+# not one TCP SYN. It never even showed the WiFi icon. With no default route
+# and no resolver, iOS classifies the interface as unusable and declines to
+# route anything over it — including traffic to 10.10.20.1, which is directly
+# on-link and needs no gateway at all. A laptop will happily use such a
+# network; a phone will not.
+#
+# With both advertised, the same phone immediately loaded the dashboard and
+# opened the /ws WebSocket, despite the internet probe still failing. The
+# probe failing is fine. Having nothing to probe *with* is not.
+#
+# DNS=10.10.20.1 points at systemd-resolved, which only answers on this
+# address because setup/07-wifi-ap.sh installs a DNSStubListenerExtra drop-in.
+# If that drop-in goes missing, DNS here becomes a black hole and the phone
+# regresses to the behaviour above — so the setup script verifies it.
+#
+# Note the box does NOT forward or NAT, so it is not an internet gateway; the
+# advertised route exists to make the interface look complete, not to carry
+# traffic. In the field there is no uplink to share anyway.
+#
+# fpvlink.local also resolves over the AP via avahi/mDNS, independently of
+# this. avahi is already pinned to IPv4-only and advertises per-interface.
+EmitRouter=yes
+EmitDNS=yes
+DNS=10.10.20.1
