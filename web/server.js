@@ -265,7 +265,10 @@ function validateConfig(body) {
   if (body.hdmi_lut_active_id !== undefined && typeof body.hdmi_lut_active_id !== 'string') {
     errors.push('hdmi_lut_active_id must be a string');
   }
-  const STANDBY_CARDS = ['grounded', 'bars', 'black'];
+  // Keep in sync with STANDBY_CARDS in capture/pipeline.py (the pipeline is the
+  // only thing that can actually render these) and STANDBY_CARDS in
+  // web/js/outputs.js (the buttons that offer them).
+  const STANDBY_CARDS = ['grounded', 'grounded_anim', 'bars', 'black'];
   if (body.standby_card !== undefined && !STANDBY_CARDS.includes(body.standby_card)) {
     errors.push(`standby_card must be one of: ${STANDBY_CARDS.join(', ')}`);
   }

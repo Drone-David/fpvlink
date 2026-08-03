@@ -38,12 +38,31 @@ STATUS_URL = "http://127.0.0.1:8081/internal/status"
 # Selectable standby/test cards. "grounded" is the original single standby
 # image, unchanged — it's the default so existing behaviour is untouched
 # unless a user explicitly picks a different card in the dashboard.
+#
+# Each card is a descriptor rather than a bare path, so animated cards can sit
+# beside stills:
+#   kind="still"     → one JPEG, held on screen by imagefreeze
+#   kind="sequence"  → a directory of contiguous JPEGs, looped by multifilesrc
+# Both normalise to STANDBY_CAPS, so nothing downstream of the input-selector
+# can tell the difference. See build_standby_segment for the pipeline syntax
+# and resolve_standby_card for what makes a card usable.
 DEFAULT_STANDBY_CARD = "grounded"
+_CAPTURE_DIR = os.path.dirname(__file__)
+_CARDS_DIR = os.path.join(_CAPTURE_DIR, "cards")
 STANDBY_CARDS = {
-    "grounded": os.path.join(os.path.dirname(__file__), "standby.jpg"),
-    "bars":     os.path.join(os.path.dirname(__file__), "cards", "bars.jpg"),
-    "black":    os.path.join(os.path.dirname(__file__), "cards", "black.jpg"),
+    "grounded": {"kind": "still", "path": os.path.join(_CAPTURE_DIR, "standby.jpg")},
+    "bars":     {"kind": "still", "path": os.path.join(_CARDS_DIR, "bars.jpg")},
+    "black":    {"kind": "still", "path": os.path.join(_CARDS_DIR, "black.jpg")},
+    # Animated Grounded: a 60-frame 6s loop at STANDBY_FPS. Motion is the point
+    # — a still card is indistinguishable from a crashed box on a downstream
+    # monitor, so the moving element is a liveness signal, not decoration.
+    "grounded_anim": {"kind": "sequence",
+                      "path": os.path.join(_CARDS_DIR, "anim", "grounded")},
 }
+
+# multifilesrc reads frames as location % index, starting at SEQUENCE_START_INDEX.
+SEQUENCE_PATTERN = "%04d.jpg"
+SEQUENCE_START_INDEX = 1
 CONFIG_PATH = os.environ.get(
     "FPVLINK_CONFIG",
     os.path.join(os.path.dirname(__file__), "..", "system", "config.json"),
@@ -99,15 +118,71 @@ def load_standby_config():
         return DEFAULT_STANDBY_CARD
 
 
-def resolve_standby_image(card_id):
-    """Map a standby-card id to an existing image path, falling back to the
-    default card if the configured one is missing on disk (must never leave
-    the standby filesrc pointing at a nonexistent file)."""
-    path = STANDBY_CARDS.get(card_id, STANDBY_CARDS[DEFAULT_STANDBY_CARD])
-    if not os.path.exists(path):
-        print(f"[Pipeline] Standby card '{card_id}' file missing ({path}) — falling back to default", flush=True)
-        return STANDBY_CARDS[DEFAULT_STANDBY_CARD]
-    return path
+def count_sequence_frames(directory):
+    """Number of contiguous frames in a sequence directory from
+    SEQUENCE_START_INDEX, and the total number of .jpg files present.
+
+    Contiguity matters because multifilesrc ends its stream at the first
+    missing index — a gap doesn't error, it silently truncates the loop at that
+    frame, which looks exactly like the frozen-output bug an animated card
+    exists to make visible. Returning the total too lets the caller warn when
+    frames exist beyond a gap (a broken export) rather than play a short loop
+    and say nothing.
+    """
+    contiguous = 0
+    while os.path.exists(os.path.join(
+            directory, SEQUENCE_PATTERN % (SEQUENCE_START_INDEX + contiguous))):
+        contiguous += 1
+    try:
+        total = len([f for f in os.listdir(directory) if f.lower().endswith(".jpg")])
+    except OSError:
+        total = contiguous
+    return contiguous, total
+
+
+def resolve_standby_card(card_id):
+    """Map a standby-card id to a usable card descriptor, falling back to the
+    default card if the configured one isn't usable on disk (must never leave
+    the standby branch pointing at something missing).
+
+    Same defensive contract as load_standby_config: this feeds the always-on
+    display, so an unusable card costs at most a less interesting picture — it
+    must never raise.
+    """
+    default = STANDBY_CARDS[DEFAULT_STANDBY_CARD]
+    card = STANDBY_CARDS.get(card_id, default)
+    kind, path = card["kind"], card["path"]
+
+    if kind == "still":
+        if not os.path.exists(path):
+            print(f"[Pipeline] Standby card '{card_id}' file missing ({path}) "
+                  f"— falling back to default", flush=True)
+            return default
+        return card
+
+    if kind == "sequence":
+        if not os.path.isdir(path):
+            print(f"[Pipeline] Standby card '{card_id}' frame directory missing "
+                  f"({path}) — falling back to default", flush=True)
+            return default
+        contiguous, total = count_sequence_frames(path)
+        if contiguous < 2:
+            print(f"[Pipeline] Standby card '{card_id}' needs at least 2 frames "
+                  f"contiguous from {SEQUENCE_PATTERN % SEQUENCE_START_INDEX} in "
+                  f"{path} (found {contiguous}) — falling back to default", flush=True)
+            return default
+        if total > contiguous:
+            # Playable, so don't downgrade to a static card over it — but the
+            # loop will be shorter than intended, which is worth saying out loud.
+            print(f"[Pipeline] Standby card '{card_id}': {total} frames present but "
+                  f"only {contiguous} contiguous from "
+                  f"{SEQUENCE_PATTERN % SEQUENCE_START_INDEX} — the loop stops at "
+                  f"the gap. Check the frame export.", flush=True)
+        return card
+
+    print(f"[Pipeline] Standby card '{card_id}' has unknown kind '{kind}' "
+          f"— falling back to default", flush=True)
+    return default
 
 
 # Element name for the LUT in the display branch, so the live↔standby switch can
@@ -151,6 +226,109 @@ def build_lut_segment(enabled, active_id):
     # Named so the live↔standby switch can bypass it while the standby card is
     # showing — see set_lut_active().
     return f'! fpvlut3d name={LUT_ELEMENT_NAME} file="{safe}" '
+
+# Caps the standby branch normalises to. Everything downstream of the
+# input-selector sees these no matter which card is showing, so the branch can
+# be rebuilt freely without touching the rest of the graph.
+#
+# STANDBY_FPS is shared by the caps and by the sequence source's own framerate,
+# so an animated card can't end up declaring one rate and being resampled to
+# another. 10fps is deliberate: this branch runs continuously (see
+# build_sequence_segment), so its cost is paid during live capture too.
+STANDBY_FPS = 10
+STANDBY_CAPS = (
+    f"video/x-raw,format=NV12,width=1920,height=1080,framerate={STANDBY_FPS}/1"
+)
+
+
+def _gst_quote(value):
+    """Escape a path for a parse-launch quoted string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_still_segment(image_path):
+    """Standby branch for a single-image card.
+
+    imagefreeze is-live=true is load-bearing, not decoration: it is the only
+    thing pacing this branch, because the display's kmssink runs sync=false.
+    Anything that replaces it has to bring its own pacing or the branch runs at
+    decode speed — see build_sequence_segment.
+    """
+    return (
+        f'filesrc location="{_gst_quote(image_path)}"\n'
+        f"  ! jpegdec ! imagefreeze is-live=true\n"
+        f"  ! videoconvert ! videoscale ! videorate\n"
+        f"  ! {STANDBY_CAPS}\n"
+        f"  ! sel.\n"
+    )
+
+
+def build_sequence_segment(directory):
+    """Standby branch for an animated (looping frame sequence) card.
+
+    clocksync replaces imagefreeze as this branch's pacing, and dropping it is
+    the #1 way a first attempt looks broken: with kmssink on sync=false, nothing
+    else throttles the branch, so the loop plays at decode speed. Measured on
+    the box: 91fps and 102% of one core without it, a correct 10fps and ~19% of
+    one core with it.
+
+    multifilesrc loop=true wraps natively — verified 250 buffers over 25s at
+    exactly 10fps across four wraps with zero EOS — so no segment-seek plumbing
+    is needed. An MP4 loop would need that plumbing AND would put a second
+    mppvideodec instance on the VPU beside the live decode, which is why this is
+    a frame sequence and not a video file.
+
+    Note this branch keeps running while the live pad is active — input-selector
+    with sync-streams=false does not park the inactive branch (measured: 10
+    buffers/s on the standby pad either way, identical CPU). So an animated card
+    costs its ~6% of one core continuously, not only while it's on screen. That
+    is accepted: it buys the guarantee that a frame is always queued, so the
+    fallback to standby on signal loss is instant.
+    """
+    location = os.path.join(directory, SEQUENCE_PATTERN)
+    return (
+        f'multifilesrc location="{_gst_quote(location)}" '
+        f"index={SEQUENCE_START_INDEX} loop=true "
+        f"caps=image/jpeg,framerate={STANDBY_FPS}/1\n"
+        f"  ! jpegdec ! clocksync\n"
+        f"  ! videoconvert ! videoscale ! videorate\n"
+        f"  ! {STANDBY_CAPS}\n"
+        f"  ! sel.\n"
+    )
+
+
+def build_standby_segment(card):
+    """Return the GStreamer fragment for the standby branch, ending at `sel.`.
+
+    Split out of build_pipeline_string so the parse-failure fallback can rebuild
+    this branch with the known-good default card instead of reusing whatever was
+    configured — see the note in build_pipeline_string about why this branch is
+    reset rather than blanked.
+
+    Guarded like build_lut_segment: if a kind's elements aren't registered, fall
+    back to the default still rather than emit syntax that would fail
+    parse_launch. Returning working syntax for a less interesting card always
+    beats risking the always-on display.
+    """
+    kind = card["kind"]
+
+    if kind == "sequence":
+        missing = [e for e in ("multifilesrc", "clocksync")
+                   if Gst.ElementFactory.find(e) is None]
+        if missing:
+            print(f"[Pipeline] Animated standby needs {', '.join(missing)} — not "
+                  f"registered in this GStreamer install. Falling back to the "
+                  f"default card.", flush=True)
+            return build_still_segment(STANDBY_CARDS[DEFAULT_STANDBY_CARD]["path"])
+        return build_sequence_segment(card["path"])
+
+    if kind != "still":
+        print(f"[Pipeline] Standby card has unknown kind '{kind}' — using the "
+              f"default card", flush=True)
+        return build_still_segment(STANDBY_CARDS[DEFAULT_STANDBY_CARD]["path"])
+
+    return build_still_segment(card["path"])
+
 
 # DRM connector for HDMI-A-1 (verified via modetest: connector 217 → CRTC 89).
 KMS_CONNECTOR_ID = 217
@@ -257,14 +435,21 @@ _last_frame_arrival_mono = None
 # whatever is on HDMI (live feed, or the standby card during signal loss — which
 # doubles as a "no signal" indicator), so it's unconditional: no toggle, hence
 # no restart blip to turn it on/off mid-event.
-def build_pipeline_string(lut_segment, ndi_branch, preview_branch):
+def build_pipeline_string(standby_segment, lut_segment, ndi_branch, preview_branch):
     """Assemble the full pipeline description.
 
-    Called once with the real optional segments. If that fails to parse, called
-    again with all three blank as a last-resort fallback (see the parse_launch
-    try/except below) — a single bad LUT/NDI/preview segment must never leave
-    HDMI dark. (Preview is normally always-on, but it's still passed as a
-    parameter precisely so the fallback can strip it if it's ever the culprit.)
+    Called once with the real segments. If that fails to parse, called again as
+    a last-resort fallback (see the parse_launch try/except below) with
+    LUT/NDI/preview blank and the standby branch reset to the default card — a
+    single bad segment must never leave HDMI dark. (Preview is normally
+    always-on, but it's still passed as a parameter precisely so the fallback
+    can strip it if it's ever the culprit.)
+
+    Note the standby branch is RESET, not blanked, unlike the other three:
+    blanking it would leave the input-selector with a single pad, and the
+    sel.get_static_pad("sink_1") lookup below would come back None and take the
+    process down — the exact outcome the fallback exists to prevent. There is
+    always a standby branch; the only question is which card is in it.
     """
     return f"""
 appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,stream-format=byte-stream
@@ -273,25 +458,24 @@ appsrc name=live is-live=true do-timestamp=true format=time caps=video/x-h264,st
   ! video/x-raw,format=NV12
   ! input-selector name=sel sync-streams=false
 
-filesrc location={STANDBY_IMAGE}
-  ! jpegdec ! imagefreeze is-live=true
-  ! videoconvert ! videoscale ! videorate
-  ! video/x-raw,format=NV12,width=1920,height=1080,framerate=10/1
-  ! sel.
-
+{standby_segment}
 sel. ! tee name=t
 t. ! queue name=dispq max-size-buffers={DISPQ_BUFFERS} leaky=downstream {lut_segment}! kmssink name=hdmisink connector-id={KMS_CONNECTOR_ID} plane-id={KMS_PLANE_ID} can-scale=true sync=false skip-vsync=true
 {ndi_branch}
 {preview_branch}
 """
 
-# Selectable standby/test card (Grounded/Bars/Black) — resolved to a real,
-# existing file path up front so build_pipeline_string's filesrc can never
-# point at something missing.
+# Selectable standby/test card — resolved to a card that actually exists on
+# disk up front, so the standby branch can never point at something missing.
 standby_card_id = load_standby_config()
-STANDBY_IMAGE = resolve_standby_image(standby_card_id)
+STANDBY_CARD = resolve_standby_card(standby_card_id)
+STANDBY_SEGMENT = build_standby_segment(STANDBY_CARD)
+# Known-good standby branch for the parse-failure fallback below: always the
+# default card, independent of whatever happens to be configured.
+DEFAULT_STANDBY_SEGMENT = build_standby_segment(STANDBY_CARDS[DEFAULT_STANDBY_CARD])
 if standby_card_id != DEFAULT_STANDBY_CARD:
-    print(f"[Pipeline] Standby card: '{standby_card_id}' ({STANDBY_IMAGE})", flush=True)
+    print(f"[Pipeline] Standby card: '{standby_card_id}' "
+          f"({STANDBY_CARD['kind']}: {STANDBY_CARD['path']})", flush=True)
 
 # NDI output taps the same tee as the display, so the NDI source stays alive
 # across live↔standby switches (receivers always see a picture). ndisink accepts
@@ -322,7 +506,8 @@ PREVIEW_BRANCH = (
     "! jpegenc quality=40 ! udpsink host=127.0.0.1 port=9002 sync=false"
 )
 
-PIPELINE_STRING = build_pipeline_string(LUT_SEGMENT, NDI_BRANCH, PREVIEW_BRANCH)
+PIPELINE_STRING = build_pipeline_string(
+    STANDBY_SEGMENT, LUT_SEGMENT, NDI_BRANCH, PREVIEW_BRANCH)
 
 try:
     pipeline = Gst.parse_launch(PIPELINE_STRING)
@@ -332,9 +517,10 @@ except GLib.Error as e:
     # ones we didn't anticipate) as recoverable, not fatal: drop every optional
     # branch and keep HDMI alive rather than crash-loop on a bad segment.
     print(f"[Pipeline] FATAL: pipeline failed to parse with configured outputs "
-          f"({e}) — retrying with LUT/NDI/preview disabled so HDMI stays up. "
+          f"({e}) — retrying with LUT/NDI/preview disabled and the standby card "
+          f"reset to '{DEFAULT_STANDBY_CARD}' so HDMI stays up. "
           f"Check those settings in the dashboard.", flush=True)
-    PIPELINE_STRING = build_pipeline_string("", "", "")
+    PIPELINE_STRING = build_pipeline_string(DEFAULT_STANDBY_SEGMENT, "", "", "")
     pipeline = Gst.parse_launch(PIPELINE_STRING)
 
 live_src = pipeline.get_by_name("live")

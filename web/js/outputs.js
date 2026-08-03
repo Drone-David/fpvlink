@@ -14,10 +14,14 @@ import {
 } from './state.js';
 import { renderDestinations } from './monitor.js';
 
+// Keep in sync with STANDBY_CARDS in capture/pipeline.py and the validator
+// array in web/js/../server.js — an id offered here that the pipeline doesn't
+// know falls back to the default card without telling the operator why.
 const STANDBY_CARDS = [
-  { id: 'grounded', label: 'Grounded', desc: 'Branded standby card' },
-  { id: 'bars',     label: 'Bars',     desc: 'SMPTE-style test pattern' },
-  { id: 'black',    label: 'Black',    desc: 'Sync black' },
+  { id: 'grounded',      label: 'Grounded', desc: 'Branded standby card' },
+  { id: 'grounded_anim', label: 'Grounded (moving)', desc: 'Animated — shows the box is alive' },
+  { id: 'bars',          label: 'Bars',     desc: 'SMPTE-style test pattern' },
+  { id: 'black',         label: 'Black',    desc: 'Sync black' },
 ];
 
 // Fields not backed by a form control.
