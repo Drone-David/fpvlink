@@ -17,7 +17,21 @@
 # Host override:  FPVLINK_HOST=1.2.3.4 scripts/deploy.sh
 set -euo pipefail
 
-HOST="${FPVLINK_HOST:-192.168.87.76}"
+# Default to the mDNS name, not a DHCP address: leases move, and this script
+# used to point at a stale one. setup/05-network.sh names the box 'fpvlink', so
+# fpvlink.local follows it onto any network. If mDNS is unavailable, fall back
+# to the service port's fixed address, which no router can change.
+HOST="${FPVLINK_HOST:-fpvlink.local}"
+FALLBACK_HOST="10.10.10.1"
+
+# -W is milliseconds on macOS (this script runs from the Mac), not seconds.
+if [[ -z "${FPVLINK_HOST:-}" ]] && ! ping -c1 -W 1500 "$HOST" >/dev/null 2>&1; then
+  if ping -c1 -W 1500 "$FALLBACK_HOST" >/dev/null 2>&1; then
+    echo "fpvlink.local did not resolve; using service port $FALLBACK_HOST" >&2
+    HOST="$FALLBACK_HOST"
+  fi
+fi
+
 REMOTE="root@${HOST}"
 DEST="/opt/fpvlink"
 
