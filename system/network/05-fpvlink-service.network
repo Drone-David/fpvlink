@@ -1,0 +1,50 @@
+# FPVLink service port — a fixed management address that never moves.
+#
+# The problem this solves: the box is headless. When its DHCP lease changes
+# there is no screen to read the new address off of, and no way to find it
+# again short of ARP-sweeping the subnet (which is how it was being found).
+#
+# So the second, otherwise unused NIC is pinned to 10.10.10.1 and never does
+# DHCP. Cable a laptop straight into it and the box is at 10.10.10.1 — no
+# router, no lease, no discovery involved. The primary LAN port is untouched
+# and still takes a normal DHCP address for internet/LAN use.
+#
+# Why the filename starts with 05-: systemd-networkd applies the FIRST
+# .network file that matches an interface, sorted by filename across /etc,
+# /run and /lib. Armbian manages networking with netplan, which generates
+# /run/systemd/network/10-netplan-all-eth-interfaces.network matching "e*" —
+# that would otherwise claim this port and DHCP it. 05- sorts ahead of 10-,
+# so this file wins for enP3p49s0 and leaves every other interface, notably
+# the primary LAN port, entirely to netplan. Do not rename it.
+#
+# Interface name is the PCIe path (stable across reboots on this board).
+#
+# To revert: rm /etc/systemd/network/05-fpvlink-service.network
+#            networkctl reload && networkctl reconfigure enP3p49s0
+
+[Match]
+Name=enP3p49s0
+
+[Link]
+# Never let boot block waiting for this port — it usually has no cable in it.
+RequiredForOnline=no
+
+[Network]
+Address=10.10.10.1/24
+DHCPServer=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+# Assign the address even with no cable plugged in, so 10.10.10.1 is always
+# present and the port answers the instant a cable goes in.
+ConfigureWithoutCarrier=yes
+
+[DHCPServer]
+# Hands a directly-cabled laptop 10.10.10.50-69 so you don't have to configure
+# one by hand. Bound to this interface only — it cannot serve a real LAN
+# unless someone plugs the LAN into this specific port.
+PoolOffset=50
+PoolSize=20
+# Advertise no gateway and no DNS: the laptop keeps using its Wi-Fi for
+# internet and uses this port only to reach 10.10.10.1.
+EmitRouter=no
+EmitDNS=no
