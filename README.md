@@ -57,16 +57,34 @@ nmtui     # text UI to connect to WiFi
 
 ### 3. Transfer the project
 ```bash
-# From your Mac:
-scp -r /path/to/fpvlink fpvlink@<OPI-IP>:~/fpvlink
-# OR clone from git once you push it there
+git clone git@github.com:Drone-David/fpvlink.git ~/fpvlink
 ```
 
 ---
 
 ## Day 1: Software setup (run once)
 
-SSH into the OPi 5 Plus and run the setup scripts in order:
+### Decide the box's identity first
+
+Every box needs a **unique hostname and AP SSID**. Two units answering to
+`fpvlink.local` on one network is not a cosmetic problem: `scripts/deploy.sh`
+targets that name by default, so a collision means you can push a build to the
+wrong box without noticing. Pick the identity before running step 5.
+
+| Box | `FPVLINK_HOSTNAME` | `FPVLINK_AP_SSID` | `FPVLINK_AP_CHANNEL` |
+|-----|--------------------|-------------------|----------------------|
+| 1   | `fpvlink`          | `FPVLink`         | `6`                  |
+| 2   | `fpvlink-2`        | `FPVLink-2`       | `1`                  |
+
+Addresses do **not** need to differ. The service port is 10.10.10.1 and the AP
+is 10.10.20.1 on every box by design — one address to remember, whichever unit
+your laptop is cabled into, and a client is only ever joined to one AP at a
+time. Only override `FPVLINK_SERVICE_IP` if you cable two boxes' service ports
+into the same switch.
+
+### Run the scripts in order
+
+SSH into the OPi 5 Plus:
 
 ```bash
 cd ~/fpvlink
@@ -81,11 +99,35 @@ sudo ./setup/02-usb-otg.sh
 sudo reboot
 
 # 3. After reboot: install and validate GStreamer rkmpp hardware codecs
+#    (also builds the 3D-LUT plugin via setup/build-lut-plugin.sh)
 sudo ./setup/03-gstreamer.sh
 
-# 4. Install fpvlink as a system service
+# 4. Install fpvlink as a system service (npm install + pip install run here)
 sudo ./setup/04-service.sh
+
+# 5. Fixed service address + mDNS name. Set the hostname chosen above.
+#    -E is required so sudo passes the variable through.
+sudo -E FPVLINK_HOSTNAME=fpvlink-2 ./setup/05-network.sh
+
+# 6. Make the SD card survive an unclean shutdown. DO NOT SKIP — see below.
+sudo ./setup/06-filesystem.sh
+# --> REBOOT after this step (ext4 cannot change data mode on a remount)
+sudo reboot
+
+# 7. Optional: field WiFi AP (needs the TP-Link Archer T3U Nano plugged in).
+#    Prompts for a WPA2 passphrase if FPVLINK_AP_PASSPHRASE is unset.
+sudo -E FPVLINK_AP_SSID=FPVLink-2 FPVLINK_AP_CHANNEL=1 ./setup/07-wifi-ap.sh
 ```
+
+> **Step 6 is not optional on a fresh Armbian flash.** The stock image's ext4
+> superblock carries `journal_data_writeback` and `/etc/fstab` sets
+> `commit=120`, so a power-loss window of up to two minutes can leave files
+> full-length and full of NULs. This is not theoretical — on 2026-08-03 it
+> zero-filled `web/js/monitor.js`, and because `app.js` imports it, one
+> unparseable module took out the entire dashboard. `06-filesystem.sh` switches
+> the filesystem to `data=ordered` and drops `commit` back to the 5s default.
+
+Each script is idempotent — re-running one is safe.
 
 ### Validate hardware codec
 
@@ -289,11 +331,31 @@ journalctl -u fpvlink-pipeline --no-pager -n 50
 
 ---
 
+## Deploying updates
+
+`scripts/deploy.sh` copies exactly what git tracks and verifies by checksum
+afterwards. It refuses to deploy from a dirty or unpushed tree, and it excludes
+`system/config.json` (device-local runtime state) and `scratch/`.
+
+```bash
+scripts/deploy.sh --check                      # compare device against HEAD, change nothing
+scripts/deploy.sh                              # deploy, verify, restart what changed
+FPVLINK_HOST=fpvlink-2.local scripts/deploy.sh # target the second box
+```
+
+**With more than one box, always pass `FPVLINK_HOST`.** The default is
+`fpvlink.local`, which is box 1. Run `--check` first if you are not certain
+which unit you are pointed at — it names the host and changes nothing.
+
+---
+
 ## Project structure
 
 ```
 fpvlink/
-├── setup/          One-time setup scripts (run on OPi 5 Plus), incl.
+├── setup/          One-time setup scripts 01-07 (run on OPi 5 Plus), incl.
+│                   05-network.sh (per-box hostname/service IP),
+│                   06-filesystem.sh (SD-card writeback fix — mandatory) and
 │                   build-lut-plugin.sh (compiles capture/fpvlut3d.c)
 ├── capture/        USB capture (goggles2.py, v1v2.py) + capture/pipeline.py
 │                   (the always-on HDMI pipeline actually deployed) +

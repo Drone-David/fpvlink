@@ -19,6 +19,12 @@
 #
 # Interface name is the PCIe path (stable across reboots on this board).
 #
+# TEMPLATE: setup/05-network.sh installs this file, rewriting the Name= and
+# Address= lines below from FPVLINK_SERVICE_IF / FPVLINK_SERVICE_IP. The values
+# committed here are the defaults. Keep both lines in their exact current shape
+# ("Name=<if>" and "Address=<ip>/24", no trailing spaces) — the script verifies
+# the substitution landed and aborts if the pattern stops matching.
+#
 # To revert: rm /etc/systemd/network/05-fpvlink-service.network
 #            networkctl reload && networkctl reconfigure enP3p49s0
 
