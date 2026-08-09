@@ -469,6 +469,13 @@ a:hover { color: #67e8f9; }
 .state-badge.is-live  .state-badge-dot { background: var(--ok); }
 .state-badge.is-live  .state-badge-word { color: var(--ok); }
 
+/* Pre-arm takes the accent cyan, not amber: the feed is healthy and on air,
+   it just isn't at full rate yet. Amber here would read as a fault at the
+   start of every race. */
+.state-badge.is-prearm { border-color: var(--accent-line); }
+.state-badge.is-prearm .state-badge-dot { background: var(--accent); }
+.state-badge.is-prearm .state-badge-word { color: var(--accent); }
+
 .state-badge.is-paused { border-color: rgba(251,191,36,.4); }
 .state-badge.is-paused .state-badge-dot { background: var(--warn); }
 .state-badge.is-paused .state-badge-word { color: var(--warn); }

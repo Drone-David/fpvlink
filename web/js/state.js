@@ -91,13 +91,53 @@ export function formatDuration(seconds) {
  * Pacing thresholds are relative to the ideal inter-frame gap (1000/fps), not
  * a fixed millisecond count — source framerate varies by goggles model and
  * resolution, so a hardcoded 21/25 ms would be wrong at anything but 60 fps.
+ *
+ * The multipliers are whole missed frames, not fitted percentiles: a p95 gap of
+ * 2x the ideal means at least 5% of frames arrived a full frame-time late, and
+ * 3x means two. That is a fault you can name, which is the point — this drives
+ * the dashboard people load *to troubleshoot*, so a node going amber has to
+ * mean something is actually wrong.
+ *
+ * The old 1.25x/1.5x sat inside this source's normal jitter and cried wolf
+ * continuously. Over the 14-race 2026-08-04 event — 2,817 armed samples with
+ * ZERO dropped frames — p95/ideal ran median 1.45x, 99th 1.67x, max 1.97x, so
+ * the pipeline node showed amber "jittery" 69.5% of the night and red
+ * "stalling" 25.6%, and read healthy green only 4.8%. An alarm that is lit
+ * ~95% of the time on a flawless feed tells you nothing on the night it
+ * matters. Both thresholds now sit above that entire measured healthy spread.
  */
 export function pacingSeverity(p95, fps) {
   if (!(p95 > 0) || !(fps > 0)) return 'off';
   const ideal = 1000 / fps;
-  if (p95 > ideal * 1.5)  return 'err';
-  if (p95 > ideal * 1.25) return 'warn';
+  if (p95 > ideal * 3)  return 'err';
+  if (p95 > ideal * 2)  return 'warn';
   return 'ok';
+}
+
+/**
+ * Inter-frame gap above which the source is running at half rate — the
+ * pre-arm / low-power feed. See isPreArm().
+ */
+export const PREARM_GAP_MS = 25;
+
+/**
+ * Pre-arm ("low power") detection.
+ *
+ * The craft streams a half-rate, low-bitrate feed from the moment the goggles
+ * link up until the drone is armed, then promotes to full quality. It is normal
+ * operation, not a fault — but nothing on screen said so, and an operator could
+ * not tell "not armed yet" from "something is wrong with the feed".
+ *
+ * Keyed off the measured inter-frame gap rather than the reported fps, because
+ * fps is a 2-second average that dips through the arm transition itself and
+ * would flap. Across the 14-race 2026-08-04 event the two states formed clean,
+ * non-overlapping clusters over 2,952 samples — 16.37–23.43 ms armed, and
+ * 26.39–37.08 ms pre-arm — so this threshold sits in the empty band between
+ * them with ~1.5 ms of margin either side. Widen it if a future goggles model
+ * or capture resolution pushes the armed cluster closer.
+ */
+export function isPreArm(s) {
+  return (Number(s?.frame_gap_mean_ms) || 0) > PREARM_GAP_MS;
 }
 
 // ─────────────────────────────────────────────
