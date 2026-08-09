@@ -31,6 +31,13 @@
 # Overridable: FPVLINK_AP_SSID (default FPVLink), FPVLINK_AP_CHANNEL (6),
 #              FPVLINK_AP_COUNTRY (US), FPVLINK_AP_PASSPHRASE
 #
+# MULTI-BOX: give each box its own SSID (FPVLINK_AP_SSID) so you can tell at a
+# glance which unit a phone is joining. Two boxes may keep the same AP address
+# (10.10.20.1) — a client is only ever on one of these networks at a time.
+# The channel is the one to think about at a field with both units live: two
+# APs on ch6 within a few metres will step on each other, so put the second on
+# ch1 or ch11.
+#
 # Idempotent: safe to re-run. Re-running without FPVLINK_AP_PASSPHRASE keeps
 # the passphrase already installed.
 # =============================================================================
@@ -352,7 +359,7 @@ fi
 
 step "Done"
 echo -e "  SSID:      ${BOLD}${AP_SSID}${NC}  (2.4GHz, channel ${AP_CHANNEL}, WPA2)"
-echo -e "  Dashboard: ${BOLD}http://${AP_IP}:8080${NC}  or  ${BOLD}http://fpvlink.local:8080${NC}"
+echo -e "  Dashboard: ${BOLD}http://${AP_IP}:8080${NC}  or  ${BOLD}http://$(hostnamectl --static).local:8080${NC}"
 echo -e "  Clients get ${BOLD}${AP_IP%.*}.50-69${NC}, plus a default route and a resolver."
 echo -e "  The box does not forward or NAT, so there is no internet through it — the"
 echo -e "  route and DNS exist because phones refuse to use an interface without them."

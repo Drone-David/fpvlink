@@ -23,6 +23,22 @@
 # Run as root on the device:
 #   sudo bash 05-network.sh
 #
+# MULTI-BOX: every name here must be unique per box, or two units on one
+# network fight over the same mDNS name and you cannot tell which one you are
+# deploying to. Override with:
+#
+#   FPVLINK_HOSTNAME    default 'fpvlink'     -> <name>.local
+#   FPVLINK_SERVICE_IP  default '10.10.10.1'  -> the /24 is derived from this
+#   FPVLINK_SERVICE_IF  default 'enP3p49s0'   -> which NIC is the service port
+#
+# Keep FPVLINK_SERVICE_IP at the default unless you are cabling more than one
+# box's service port into the SAME switch. The service port is normally a
+# point-to-point run to one laptop, so every box answering on 10.10.10.1 is a
+# feature — one address to remember, whichever unit you are plugged into.
+# The hostname is the one that MUST differ; it is shared-network visible.
+#
+#   sudo FPVLINK_HOSTNAME=fpvlink-2 bash 05-network.sh
+#
 # Idempotent: safe to re-run.
 # =============================================================================
 
@@ -54,13 +70,35 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-SERVICE_IF="enP3p49s0"
-SERVICE_IP="10.10.10.1"
-HOSTNAME_NEW="fpvlink"
+SERVICE_IF="${FPVLINK_SERVICE_IF:-enP3p49s0}"
+SERVICE_IP="${FPVLINK_SERVICE_IP:-10.10.10.1}"
+HOSTNAME_NEW="${FPVLINK_HOSTNAME:-fpvlink}"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NET_UNIT="05-fpvlink-service.network"
 
+# The defaults as they appear in the shipped template, so the install step
+# knows what to substitute out of it.
+TPL_IF="enP3p49s0"
+TPL_IP="10.10.10.1"
+
+# Reject a bad hostname here rather than letting hostnamectl take it and
+# leaving the box with a name mDNS will not publish. RFC 1123: letters,
+# digits and hyphens, no leading or trailing hyphen, 63 chars max.
+if ! [[ "$HOSTNAME_NEW" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+    err "Invalid hostname '$HOSTNAME_NEW'."
+    err "Use letters, digits and hyphens only (no leading/trailing hyphen), e.g. fpvlink-2"
+    exit 1
+fi
+
+if ! [[ "$SERVICE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    err "Invalid FPVLINK_SERVICE_IP '$SERVICE_IP' — expected a bare IPv4 address."
+    exit 1
+fi
+
 step "FPVLink Network Setup – fixed service address + mDNS name"
+
+info "Hostname:     $HOSTNAME_NEW  (-> $HOSTNAME_NEW.local)"
+info "Service port: $SERVICE_IF at $SERVICE_IP"
 
 # -----------------------------------------------------------------------------
 # 1. Sanity check: the service port must exist, and must NOT be the port we
@@ -72,7 +110,7 @@ step "1/4  Checking interfaces"
 if ! ip link show "$SERVICE_IF" >/dev/null 2>&1; then
     err "Interface $SERVICE_IF does not exist on this box."
     info "Interfaces present: $(ip -o link show | awk -F': ' '{print $2}' | tr '\n' ' ')"
-    err "Edit SERVICE_IF in this script and in system/network/$NET_UNIT to match."
+    err "Re-run with the right port, e.g. FPVLINK_SERVICE_IF=eth1 sudo -E bash $0"
     exit 1
 fi
 ok "Service port $SERVICE_IF present"
@@ -100,8 +138,23 @@ if [[ ! -f "$SRC_DIR/system/network/$NET_UNIT" ]]; then
     exit 1
 fi
 
-install -m 0644 "$SRC_DIR/system/network/$NET_UNIT" "/etc/systemd/network/$NET_UNIT"
-ok "Installed /etc/systemd/network/$NET_UNIT"
+# The repo file is a template carrying the defaults. Substitute the interface
+# and address in on the way to /etc so a second box can differ without the two
+# copies drifting apart — there is exactly one file to maintain.
+sed -e "s/^Name=${TPL_IF}\$/Name=${SERVICE_IF}/" \
+    -e "s|^Address=${TPL_IP}/24\$|Address=${SERVICE_IP}/24|" \
+    "$SRC_DIR/system/network/$NET_UNIT" > "/etc/systemd/network/$NET_UNIT"
+chmod 0644 "/etc/systemd/network/$NET_UNIT"
+
+# Substitution is not optional — if the template ever stops matching these
+# patterns the box would silently come up on the wrong address.
+if ! grep -q "^Name=${SERVICE_IF}\$" "/etc/systemd/network/$NET_UNIT" \
+   || ! grep -q "^Address=${SERVICE_IP}/24\$" "/etc/systemd/network/$NET_UNIT"; then
+    err "Failed to apply $SERVICE_IF / $SERVICE_IP to $NET_UNIT."
+    err "The template no longer matches 'Name=${TPL_IF}' / 'Address=${TPL_IP}/24'."
+    exit 1
+fi
+ok "Installed /etc/systemd/network/$NET_UNIT ($SERVICE_IF -> $SERVICE_IP)"
 
 # 'networkctl reload' picks up new .network files without restarting
 # systemd-networkd. A full restart would re-run DHCP on the primary port and
