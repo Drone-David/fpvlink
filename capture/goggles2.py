@@ -964,6 +964,18 @@ class Goggles2Capture:
 
         try:
             while self._streaming:
+                # Every pass through this loop is a FRESH goggles connection, so
+                # the handshake has to be re-detected from scratch. This used to
+                # be initialised once, above the loop, which meant forward_video()
+                # only ever ran its `if not handshake_complete` branch for the
+                # FIRST connection of the process lifetime: reconnects cleared
+                # _usb_stream below but nothing ever set it true again. The
+                # dashboard renders that as a red H.264 "no frames" break while
+                # video is in fact flowing perfectly (web/js/monitor.js), and the
+                # "Handshake complete" line — the marker you grep for when
+                # reconstructing an event afterwards — was logged only once a
+                # night. Reset it per connection so both re-arm every time.
+                handshake_complete = False
                 if self._usb_link or self._usb_data or self._usb_stream:
                     # Safety net: catches any disconnect path that skipped an
                     # explicit reset above, so a fresh wait always starts clean.

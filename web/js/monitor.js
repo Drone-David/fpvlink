@@ -6,7 +6,8 @@
 'use strict';
 
 import {
-  $, store, on, isLive, formatClock, formatBytes, pacingSeverity, setCapture, pushLog,
+  $, store, on, isLive, formatClock, formatBytes, pacingSeverity, isPreArm,
+  setCapture, pushLog,
 } from './state.js';
 
 // ─────────────────────────────────────────────
@@ -34,6 +35,12 @@ function renderStateBadge() {
     // The pipeline claims live but frames stopped arriving — say so rather
     // than let a frozen picture read as healthy.
     cls = 'is-stale'; text = 'STALE';
+  } else if (isLive() && isPreArm(store.stats)) {
+    // Live, on air, and healthy — but the craft is still on its half-rate
+    // pre-arm feed. Ranked below STALE (a frozen picture is the more urgent
+    // fact) and given its own colour rather than amber, because waiting for
+    // the drone to arm is normal operation, not a fault.
+    cls = 'is-prearm'; text = 'PRE-ARM';
   } else if (isLive()) {
     cls = 'is-live'; text = 'LIVE';
   } else if (!store.capturing) {
@@ -116,6 +123,12 @@ function computeChain(s) {
     pipeline = { state: 'off', detail: capturing ? 'standby' : 'standby card' };
   } else if (s.thermal_state === 'CRITICAL') {
     pipeline = { state: 'err', detail: 'throttled' };
+  } else if (isPreArm(s)) {
+    // Deliberately 'ok', not 'warn': the pacing thresholds are relative so a
+    // 30p feed is genuinely well-paced, and flagging it amber would put
+    // "degraded at pipeline" in the verdict line for every single race start.
+    // Name the state instead of hiding it behind a generic "encoding".
+    pipeline = { state: 'ok', detail: 'pre-arm 30p' };
   } else {
     const sev = pacingSeverity(Number(s.frame_gap_p95_ms) || 0, Number(s.fps) || 0);
     if (sev === 'err')       pipeline = { state: 'err',  detail: 'stalling' };
