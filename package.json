@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "Low-latency FPV streaming device software for Orange Pi 5 Plus (RK3588)",
   "license": "MIT",
-  "author": "FPVLink Contributors",
-  "homepage": "https://github.com/yourorg/fpvlink",
+  "author": "David Escobar",
+  "homepage": "https://github.com/Drone-David/fpvlink",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourorg/fpvlink.git"
+    "url": "https://github.com/Drone-David/fpvlink.git"
   },
   "keywords": [
     "fpv",
@@ -33,24 +33,19 @@
 
     "dev":   "node --watch web/server.js",
 
-    "setup": "bash scripts/setup.sh",
-
-    "lint":  "npx eslint web/ --ext .js",
-    "test":  "node --test web/**/*.test.js"
+    "lint":  "eslint web/ --ext .js",
+    "test":  "node --test web/*.test.js"
   },
+
+  "_dependencies_comment": "setup/04-service.sh runs `npm install --omit=dev` at the install root, so THIS file provisions what web/server.js resolves at runtime. It must stay in step with web/package.json — a stale multer here is what server.js would actually load on the device.",
 
   "dependencies": {
     "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
-    "ws": "^8.16.0",
-    "node-pty": "^1.0.0"
+    "multer": "^2.2.0",
+    "ws": "^8.16.0"
   },
 
   "devDependencies": {
     "eslint": "^8.56.0"
-  },
-
-  "optionalDependencies": {
-    "sd-notify": "^2.9.0"
   }
 }

@@ -235,7 +235,7 @@ def pct(v, p):
     return v[min(len(v) - 1, int(round(p * (len(v) - 1))))]
 
 
-print(f"\n=== mode={MODE} feed={FEED} fps={FPS} lut={"on" if LUT else "off"} sink={SINK} "
+print(f"\n=== mode={MODE} feed={FEED} fps={FPS} lut={'on' if LUT else 'off'} sink={SINK} "
       f"frames={frames_seen[0]} ===", flush=True)
 print(f"{'stage':<14} {'n':>5} {'mean':>8} {'p50':>8} {'p95':>8} {'max':>8}   (ms, cumulative from ingest)")
 order = ["1_parse_out", "2_dec_out", "3_dispq_in", "4_dispq_out", "sink"]
