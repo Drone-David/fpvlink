@@ -5,11 +5,15 @@ Licensed under the PolyForm Noncommercial License 1.0.0, reproduced in full
 below. In short: you may download, build, modify and run FPVLink for any
 noncommercial purpose — personal use, hobby projects, amateur pursuits,
 study, and use by charitable, educational, public research, public safety
-and government organizations. Selling it, or using it commercially, requires
-a separate license from the copyright holder.
+and government organizations.
 
-Commercial rights are reserved to the copyright holder, who sells assembled
-units. For commercial licensing enquiries, open an issue on the project.
+Commercial use — including selling it, selling hardware built on it, and
+running paid or sponsored events with it — is reserved to the copyright
+holder. No commercial license is offered for sale at this time. If you want to
+use FPVLink commercially, open an issue and ask; permission may be granted
+case by case, and it costs nothing to enquire.
+
+See LICENSING.md for what counts as commercial use and what does not.
 
 SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 

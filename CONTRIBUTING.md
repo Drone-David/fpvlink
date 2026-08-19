@@ -9,13 +9,17 @@ is unusual and the honest version is better than a surprise later.
 FPVLink is under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is
 source-available, not open source: anyone may use and modify it for
 noncommercial purposes, and **commercial rights are reserved to the copyright
-holder**, who sells assembled units.
+holder**.
 
 That creates an asymmetry you should understand before you spend an evening on a
 patch. If you contribute code and nothing else is agreed, you hold copyright on
-your lines. That would leave the project unable to sell units containing your
-work without your permission — and it would mean your contribution is being
-distributed under a licence that lets one party monetize it and not you.
+your lines, and any future commercial use of the project would need your
+permission — which in practice means it would not happen. It also means your
+contribution ships under a licence that reserves commercial rights to someone
+who is not you.
+
+Nothing commercial is being sold today and none may ever be. This is about
+keeping an option open, not cashing one in.
 
 ## Contributor terms
 
@@ -31,15 +35,16 @@ confirm that:
 2. **You grant a broad licence to the project.** You give David Escobar a
    perpetual, worldwide, non-exclusive, royalty-free, irrevocable licence to
    use, reproduce, modify, distribute and sublicense your contribution, and to
-   relicense it — including under commercial terms and as part of units sold
-   commercially.
+   relicense it, including under commercial terms. Nothing commercial is being
+   sold today; this keeps the option open rather than having it foreclosed by
+   a merge.
 
 3. **You keep your copyright.** This is a licence grant, not an assignment. Your
    work stays yours; you can use it elsewhere however you like.
 
 If you are not comfortable with point 2, please open an issue to discuss before
-writing code rather than after. A patch that cannot be shipped commercially is
-one the project probably cannot merge, and it is better to find that out early.
+writing code rather than after. It is better to find that out early than after
+you have spent an evening on it.
 
 > This is a plain-language contributor agreement written for a small project, not
 > reviewed by a lawyer. If FPVLink grows a real contributor base or you are

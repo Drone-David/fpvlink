@@ -448,9 +448,11 @@ organizations.
 **You may not** sell it, sell boxes built on it, or use it commercially.
 Commercial rights are reserved to the copyright holder.
 
-**Want a box rather than a build?** Selling assembled units is exactly the case
-this licence reserves. Open an issue if you would rather buy one than source an
-Orange Pi and cut a USB-C cable. Commercial licensing enquiries go the same way.
+**Doing something commercial with it?** Paid or sponsored events, client video
+work, or anything you are being paid for needs permission first — open an issue
+and ask. Nothing is for sale and there is no price list; asking costs nothing and
+the answer may well be yes. Club nights, practice, charity and school use need
+nothing at all. [LICENSING.md](LICENSING.md) has the detail.
 
 Bundled third-party material and the prior protocol work this builds on are
 credited in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The JetBrains Mono
