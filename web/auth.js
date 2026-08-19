@@ -20,6 +20,12 @@
 const crypto = require('crypto');
 
 const COOKIE_NAME = 'fpvlink_session';
+
+// The password every box ships with. Standard on purpose — see system/fpvlink.env
+// — but published in this repo, so it is not a secret from anyone who has read
+// the project. Named here only so the server can point that out in the journal;
+// nothing defaults to it in code, the value comes from the env file.
+const DEFAULT_PASSWORD = 'fpvlink12345';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // 30 days
 
 // Failed logins tracked per source IP. A dashboard password typed on a phone
@@ -155,6 +161,7 @@ function createAuth({ password, sessionSecret }) {
 
   return {
     enabled,
+    usingDefaultPassword: enabled && password === DEFAULT_PASSWORD,
     COOKIE_NAME,
     isLoopback,
     isAuthorized,
@@ -170,4 +177,4 @@ function createAuth({ password, sessionSecret }) {
   };
 }
 
-module.exports = { createAuth, isLoopback, COOKIE_NAME, SESSION_TTL_MS };
+module.exports = { createAuth, isLoopback, COOKIE_NAME, SESSION_TTL_MS, DEFAULT_PASSWORD };

@@ -160,6 +160,11 @@ step "4/6  Installing application dependencies"
 # ask — but Enter skips.
 ENV_FILE="${INSTALL_DIR}/system/fpvlink.env"
 
+# Keep in step with FPVLINK_PASSWORD in system/fpvlink.env and DEFAULT_PASSWORD
+# in web/auth.js — the three must agree or the "using the standard password"
+# notice in the journal starts lying.
+FPVLINK_DEFAULT_PASSWORD="fpvlink12345"
+
 if [[ -f "$ENV_FILE" ]]; then
     EXISTING_PW="$(grep -E '^FPVLINK_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
 else
@@ -173,22 +178,26 @@ if [[ -n "$EXISTING_PW" ]]; then
 elif [[ -z "$WEB_PASSWORD" ]]; then
     echo
     echo "  The dashboard can change config, stop capture mid-flight, and read logs."
-    echo "  It is reachable from every network this box joins, including the field AP."
-    echo "  Setting a password here is optional — press Enter to skip and leave it open."
+    echo "  Every FPVLink box ships with the same password so an operator can walk"
+    echo "  up to any of them: ${FPVLINK_DEFAULT_PASSWORD}"
     echo
-    SKIPPED=0
-    while [[ -z "$WEB_PASSWORD" ]]; do
-        read -r -s -p "  Dashboard password (8+ chars, Enter to skip): " WEB_PASSWORD; echo
+    echo "  That value is published in the repo, so change it if this box will be"
+    echo "  on a network you do not control. Press Enter to keep the standard one."
+    echo
+    while true; do
+        read -r -s -p "  Dashboard password (Enter for the standard one): " WEB_PASSWORD; echo
         if [[ -z "$WEB_PASSWORD" ]]; then
-            warn "No password set — the dashboard will be open to anyone who can reach it."
-            SKIPPED=1
+            WEB_PASSWORD="$FPVLINK_DEFAULT_PASSWORD"
+            info "Using the standard FPVLink password."
             break
         fi
         read -r -s -p "  Repeat: " WEB_PASSWORD_CONFIRM; echo
         if [[ "$WEB_PASSWORD" != "$WEB_PASSWORD_CONFIRM" ]]; then
-            warn "Passwords do not match."; WEB_PASSWORD=""
+            warn "Passwords do not match."
         elif [[ ${#WEB_PASSWORD} -lt 8 ]]; then
-            warn "Use at least 8 characters."; WEB_PASSWORD=""
+            warn "Use at least 8 characters."
+        else
+            break
         fi
     done
 fi

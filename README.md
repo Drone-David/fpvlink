@@ -306,14 +306,26 @@ There is no capture-side timestamp from the goggles, so true end-to-end glass-to
 
 ## Security
 
-**The dashboard takes a password if you set one.** `setup/04-service.sh` offers
-to set it, and it lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`.
+**Every box ships with the same dashboard password:**
 
-**Leaving it blank leaves the dashboard open**, and the journal says so on every
-boot. That is a real hole, not a soft default — but the service starts either
-way, deliberately. Putting video on HDMI is what this box is for, and no
-configuration mistake should stop it doing that at an event. Security that can
-ground the aircraft is not security anyone keeps.
+```
+fpvlink12345
+```
+
+That is deliberate. A rack of boxes with per-unit passwords is unusable at an
+event, and an operator should be able to walk up to any FPVLink and get in. It
+lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`.
+
+> **Change it if the box will be on a network you do not control.** The standard
+> password is published in this repo, so it is not a secret from anyone who has
+> seen the project. It keeps out a passer-by and a casual scan of the venue
+> network; it does not keep out someone who knows what this box is. Edit
+> `system/fpvlink.env` and `sudo systemctl restart fpvlink`.
+
+**Blanking it leaves the dashboard open**, and the journal says so on every boot.
+The service starts either way, deliberately — putting video on HDMI is what this
+box is for, and no password problem should stop it doing that at an event.
+Security that can ground the aircraft is not security anyone keeps.
 
 ### What the password protects
 
@@ -360,6 +372,9 @@ around.
 - **Sessions last 30 days.** Sign out from the header when you want to end one.
 - **Running open deliberately?** Just leave `FPVLINK_PASSWORD` blank. Fine on a
   bench you control; do not do it with the field AP running.
+- **The journal names it** when a box is still on the standard password, so
+  `journalctl -u fpvlink | grep standard` tells you which of your boxes you
+  never changed.
 
 
 ## Troubleshooting
