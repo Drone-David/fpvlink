@@ -45,9 +45,13 @@ SINK_DESC = ("kmssink name=sink connector-id=217 plane-id=194 can-scale=true syn
 CHUNK = 4096          # goggles LogicLink payload size
 WARMUP_FRAMES = 90    # ignore while the decoder fills / clocks settle
 
+# Mirrors PREVIEW_BRANCH in capture/pipeline.py (rate cap BEFORE the scale — see
+# the note there). Keep the two in step: this probe is only meaningful while it
+# replicates the real graph, and a stale copy here silently measures a pipeline
+# that no longer exists.
 PREVIEW = ("t. ! queue name=previewq max-size-buffers=2 leaky=downstream "
-           "! videoscale ! videorate ! videoconvert "
-           "! video/x-raw,format=I420,width=640,height=360,framerate=15/1 "
+           "! videorate max-rate=15 ! videoscale ! videoconvert "
+           "! video/x-raw,format=I420,width=640,height=360 "
            "! jpegenc quality=40 ! fakesink sync=false")
 
 lut_seg = f'! fpvlut3d file="{LUT}" ' if LUT else ""
