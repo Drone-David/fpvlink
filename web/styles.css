@@ -1403,3 +1403,21 @@ select.input option { background: #14161b; color: var(--text); }
   .out-body { animation: none; }
   .action-progress { transition: none; }
 }
+
+/* ── Sign out ──────────────────────────────────────────────────────────────
+   Sits at the far right of the header. Deliberately quiet: it is not an action
+   anyone needs mid-race, and an accidental tap costs a re-login on a phone in
+   a field. */
+.hdr-signout {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  font-size: .72rem;
+  letter-spacing: .04em;
+  padding: .35rem .6rem;
+  cursor: pointer;
+}
+.hdr-signout:hover  { color: var(--text-mute); border-color: var(--line-strong); }
+.hdr-signout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

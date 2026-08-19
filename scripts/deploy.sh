@@ -39,10 +39,15 @@ DEST="/opt/fpvlink"
 #   system/config.json — device-local runtime state (LUT selection, capture
 #     flags, output config). The one file where device and repo are MEANT to
 #     differ; copying it over would clobber live settings.
+#   system/fpvlink.env — device-local secrets: the dashboard password, the
+#     session secret, stream keys. The repo copy is a blank template, so
+#     deploying it would wipe the password and the service would then refuse to
+#     start — a box that will not boot, discovered at a flying field. This
+#     exclusion is the only thing standing between a routine deploy and that.
 #   scratch/ — no longer tracked at all (see .gitignore), so this pattern is now
 #     belt-and-braces: it keeps local research junk out of a deploy even if
 #     something under scratch/ is ever git-added again by accident.
-EXCLUDE_RE='^(system/config\.json|scratch/)'
+EXCLUDE_RE='^(system/config\.json|system/fpvlink\.env|scratch/)'
 
 MODE="deploy"; FORCE=0
 for a in "$@"; do
@@ -105,7 +110,7 @@ fi
 # ── File list ────────────────────────────────────────────────────────────────
 LIST="$(mktemp)"; trap 'rm -f "$LIST" "$LOCAL" "$REMOTE_SUMS"' EXIT
 git ls-files | grep -vE "$EXCLUDE_RE" > "$LIST"
-echo "tracked files to sync: $(wc -l < "$LIST" | tr -d ' ')  (excluding config.json, scratch/)"
+echo "tracked files to sync: $(wc -l < "$LIST" | tr -d ' ')  (excluding config.json, fpvlink.env, scratch/)"
 
 if [ "$MODE" = "deploy" ]; then
   # Record the LUT source hash first: the compiled .so is a build artifact and

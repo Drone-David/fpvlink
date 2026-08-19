@@ -150,6 +150,63 @@ ok "Ownership set: $FPVLINK_USER:$FPVLINK_GROUP on $INSTALL_DIR"
 # -----------------------------------------------------------------------------
 step "4/6  Installing application dependencies"
 
+# ── Dashboard password ───────────────────────────────────────────────────────
+#
+# Optional — the service starts fine without one, it just leaves the dashboard
+# open. Asked here because the install is the one moment someone is definitely
+# watching, and a box that reaches a flying field unprotected usually got there
+# by nobody being prompted. Same shape as the AP passphrase prompt in
+# 07-wifi-ap.sh: honour an existing value, honour the environment, otherwise
+# ask — but Enter skips.
+ENV_FILE="${INSTALL_DIR}/system/fpvlink.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+    EXISTING_PW="$(grep -E '^FPVLINK_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
+else
+    EXISTING_PW=""
+fi
+
+WEB_PASSWORD="${FPVLINK_PASSWORD:-}"
+
+if [[ -n "$EXISTING_PW" ]]; then
+    info "Dashboard password already set (edit $ENV_FILE to change it)"
+elif [[ -z "$WEB_PASSWORD" ]]; then
+    echo
+    echo "  The dashboard can change config, stop capture mid-flight, and read logs."
+    echo "  It is reachable from every network this box joins, including the field AP."
+    echo "  Setting a password here is optional — press Enter to skip and leave it open."
+    echo
+    SKIPPED=0
+    while [[ -z "$WEB_PASSWORD" ]]; do
+        read -r -s -p "  Dashboard password (8+ chars, Enter to skip): " WEB_PASSWORD; echo
+        if [[ -z "$WEB_PASSWORD" ]]; then
+            warn "No password set — the dashboard will be open to anyone who can reach it."
+            SKIPPED=1
+            break
+        fi
+        read -r -s -p "  Repeat: " WEB_PASSWORD_CONFIRM; echo
+        if [[ "$WEB_PASSWORD" != "$WEB_PASSWORD_CONFIRM" ]]; then
+            warn "Passwords do not match."; WEB_PASSWORD=""
+        elif [[ ${#WEB_PASSWORD} -lt 8 ]]; then
+            warn "Use at least 8 characters."; WEB_PASSWORD=""
+        fi
+    done
+fi
+
+if [[ -n "$WEB_PASSWORD" ]]; then
+    # A session secret too, so logins survive the reboots this box does between
+    # races instead of signing the operator out every time.
+    SESSION_SECRET="$(openssl rand -base64 48 2>/dev/null | tr -d '\n' || head -c 36 /dev/urandom | base64 | tr -d '\n')"
+    touch "$ENV_FILE"
+    chmod 0640 "$ENV_FILE"
+    sed -i -e "s|^FPVLINK_PASSWORD=.*|FPVLINK_PASSWORD=${WEB_PASSWORD}|" \
+           -e "s|^FPVLINK_SESSION_SECRET=.*|FPVLINK_SESSION_SECRET=${SESSION_SECRET}|" "$ENV_FILE"
+    grep -q '^FPVLINK_PASSWORD=' "$ENV_FILE" || echo "FPVLINK_PASSWORD=${WEB_PASSWORD}" >> "$ENV_FILE"
+    grep -q '^FPVLINK_SESSION_SECRET=' "$ENV_FILE" || echo "FPVLINK_SESSION_SECRET=${SESSION_SECRET}" >> "$ENV_FILE"
+    chown root:"$FPVLINK_USER" "$ENV_FILE" 2>/dev/null || true
+    ok "Dashboard password written to $ENV_FILE (mode 0640, not echoed)"
+fi
+
 # ── Node.js (npm install) ────────────────────────────────────────────────────
 if [[ -f "${INSTALL_DIR}/package.json" ]]; then
     info "Running npm install in $INSTALL_DIR …"

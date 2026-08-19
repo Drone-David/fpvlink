@@ -9,9 +9,9 @@ Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus 
 **Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor) · HDMI 3D LUT · SRT · RTMP · dashboard live preview
 **Output planned, not yet wired up:** Local recording · RTSP
 
-> **Security:** the dashboard has **no authentication of any kind**, and it listens on
-> every interface. Anyone who can reach port 8080 has full control of the box.
-> Read [Security](#security) before you put one on a network you do not control.
+> **Security:** the dashboard requires a password, set during setup. It still
+> listens on every interface, so read [Security](#security) before putting a box
+> on a network you do not control.
 
 ---
 
@@ -306,12 +306,19 @@ There is no capture-side timestamp from the goggles, so true end-to-end glass-to
 
 ## Security
 
-Read this before putting a box on a network you do not control. None of the
-below is a bug report — it is the current design, stated plainly.
+**The dashboard takes a password if you set one.** `setup/04-service.sh` offers
+to set it, and it lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`.
 
-**There is no authentication.** No login, no password, no token, no session. The
-API is wide open to anyone who can reach the port. With one HTTP request they
-can:
+**Leaving it blank leaves the dashboard open**, and the journal says so on every
+boot. That is a real hole, not a soft default — but the service starts either
+way, deliberately. Putting video on HDMI is what this box is for, and no
+configuration mistake should stop it doing that at an event. Security that can
+ground the aircraft is not security anyone keeps.
+
+### What the password protects
+
+Everything. The API can rewrite config, stop capture mid-flight, and upload or
+delete LUTs, so reaching the port used to be the same as owning the box:
 
 | Endpoint | What it does |
 |---|---|
@@ -321,28 +328,38 @@ can:
 | `DELETE /api/luts/:id` | Delete a LUT |
 | `GET /api/diagnostics` · `/api/logs` | Read logs and system detail |
 
-**It listens on every interface.** `web/server.js` calls
-`server.listen(PORT, '0.0.0.0')` unconditionally. The `web.allow_remote` field in
-`system/config.json` is **read by nothing** — setting it to `false` does not bind
-to localhost and never did. If the box has an IP on a network, the dashboard is
-on that network.
+The WebSocket carrying live stats and the log stream is gated at the handshake
+too, so an unauthenticated client never gets an open socket.
 
-**The field WiFi AP is a second front door.** `setup/07-wifi-ap.sh` puts the
-dashboard on `10.10.20.1:8080` for anyone associated to the AP. The AP is
-WPA2-PSK, so the passphrase you choose there is, in practice, the only thing
-standing between a stranger at a flying field and control of the box. Choose it
-accordingly, and do not reuse one.
+### What it does not protect
 
-**What this is safe for:** a box on your own bench, your own field AP, or a race
-LAN you trust. **What it is not safe for:** a shared venue network, a hotel or
-event WiFi, or anything port-forwarded to the internet. Do not forward 8080.
+**It still listens on every interface.** `web/server.js` calls
+`server.listen(PORT, '0.0.0.0')` unconditionally — `web.allow_remote` in
+`config.json` is read by nothing and never was. A password means reachability is
+no longer the same as control, but the port is still open to anyone in radio
+range of the field AP.
 
-Uploads are constrained — `.cube` extension only, 10 MB cap, server-generated
-filenames — so the LUT endpoint is not an arbitrary-write primitive, but it is
-still an unauthenticated write.
+**There is no TLS.** The dashboard is plain HTTP, because there is no way to get
+a certificate for `10.10.20.1`. Anyone who can see your traffic can see the
+password as you send it. On the field AP that means anyone who has the WPA2
+passphrase — so the AP passphrase still matters, and should not be one you share
+around.
 
-Adding real auth is on the [Roadmap](#roadmap) and is the one item that should
-land before anyone runs this somewhere public.
+**Do not forward 8080 to the internet.** A password is not a reason to.
+
+### Practical notes
+
+- **Requests from `127.0.0.1` skip the password.** `scripts/capture-flag.py` and
+  `collect-diagnostics.sh` drive the API from the box itself, where you already
+  have a shell. `X-Forwarded-For` is never trusted, so a remote client cannot
+  claim to be local.
+- **Set `FPVLINK_SESSION_SECRET`** (`openssl rand -base64 48`) or logins do not
+  survive a restart — the box reboots between races and you get signed out on the
+  phone in your pocket. `04-service.sh` generates one for you.
+- **Five failed logins per minute per IP** trips a lockout.
+- **Sessions last 30 days.** Sign out from the header when you want to end one.
+- **Running open deliberately?** Just leave `FPVLINK_PASSWORD` blank. Fine on a
+  bench you control; do not do it with the field AP running.
 
 
 ## Troubleshooting
@@ -421,7 +438,7 @@ fpvlink/
 
 ## Roadmap
 
-- [ ] **Authentication for the dashboard and API** — see [Security](#security). The one item that should land before anyone runs this on a network they do not control
+- [ ] TLS for the dashboard, so the password is not sent in the clear on the field AP
 - [ ] RTSP output (needs `gst-rtsp-server`, a pull-based server architecture unlike SRT/RTMP's push sinks, and its own dashboard UI — not yet started)
 - [ ] Local recording
 - [ ] Measure real glass-to-glass latency (needs a capture-side timestamp from the goggles)

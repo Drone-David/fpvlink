@@ -10,7 +10,8 @@
 'use strict';
 
 import {
-  $, store, on, API, saveConfig, loadLuts, loadConfig, pushLog,
+  apiFetch,
+  $, store, on, saveConfig, loadLuts, loadConfig, pushLog,
 } from './state.js';
 import { renderDestinations } from './monitor.js';
 
@@ -268,7 +269,7 @@ async function selectLut(id) {
 async function deleteLut(id, name) {
   if (!confirm(`Delete the LUT "${name}"?`)) return;
   try {
-    const res = await fetch(API(`/luts/${id}`), { method: 'DELETE' });
+    const res = await apiFetch(`/luts/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     store.luts = data.manifest || [];
@@ -301,7 +302,7 @@ async function uploadLut(files) {
   fd.append('displayName', file.name.replace(/\.cube$/i, ''));
 
   try {
-    const res = await fetch(API('/lut-upload'), { method: 'POST', body: fd });
+    const res = await apiFetch('/lut-upload', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     store.luts = data.manifest || [];

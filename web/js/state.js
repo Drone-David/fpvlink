@@ -290,7 +290,18 @@ export function connectWS() {
     store.wsConnected = false;
     emit('ws');
     clearTimeout(retryTimer);
-    retryTimer = setTimeout(connectWS, RECONNECT_MS);
+    // A 401 on the handshake and a box that has gone off the air both surface
+    // here as a plain close. /api/ping is public, so it can tell them apart:
+    // reachable-but-signed-out means the session lapsed, and retrying forever
+    // would just spin. Anything else is a real outage — keep reconnecting.
+    retryTimer = setTimeout(async () => {
+      try {
+        const res = await fetch(API('/ping'));
+        const body = await res.json();
+        if (body.auth_enabled && !body.authenticated) { toLogin(); return; }
+      } catch { /* unreachable: fall through and retry */ }
+      connectWS();
+    }, RECONNECT_MS);
   });
 
   ws.addEventListener('error', () => ws.close());
@@ -299,8 +310,26 @@ export function connectWS() {
 // ─────────────────────────────────────────────
 // REST
 // ─────────────────────────────────────────────
+// Every call to the box goes through here so that a 401 has exactly one
+// meaning in one place: the session went away, send them to the login page.
+// Without this each caller surfaces its own "HTTP 401" toast and the dashboard
+// sits there looking broken instead of asking for a password.
+export async function apiFetch(path, options) {
+  const res = await fetch(API(path), options);
+  if (res.status === 401) { toLogin(); throw new Error('Not signed in'); }
+  return res;
+}
+
+let redirecting = false;
+function toLogin() {
+  if (redirecting) return;       // several in-flight requests can 401 at once
+  redirecting = true;
+  const next = encodeURIComponent(location.pathname + location.search);
+  location.replace(`/login.html?next=${next}`);
+}
+
 async function getJSON(path) {
-  const res = await fetch(API(path));
+  const res = await apiFetch(path);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -341,7 +370,7 @@ export async function loadInitialLogs() {
 }
 
 export async function saveConfig(payload) {
-  const res = await fetch(API('/config'), {
+  const res = await apiFetch('/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -355,7 +384,7 @@ export async function saveConfig(payload) {
 }
 
 export async function setCapture(enabled) {
-  const res = await fetch(API(enabled ? '/capture/enable' : '/capture/disable'), { method: 'POST' });
+  const res = await apiFetch(enabled ? '/capture/enable' : '/capture/disable', { method: 'POST' });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   store.capturing = enabled;
