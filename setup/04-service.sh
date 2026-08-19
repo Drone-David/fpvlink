@@ -152,33 +152,38 @@ step "4/6  Installing application dependencies"
 
 # ── Dashboard password ───────────────────────────────────────────────────────
 #
-# The service refuses to start without one, so this is asked here rather than
-# letting a fresh install fail its first boot with an error nobody is watching
-# for. Same shape as the AP passphrase prompt in 07-wifi-ap.sh: honour an
-# existing value, honour the environment, otherwise ask.
+# Optional — the service starts fine without one, it just leaves the dashboard
+# open. Asked here because the install is the one moment someone is definitely
+# watching, and a box that reaches a flying field unprotected usually got there
+# by nobody being prompted. Same shape as the AP passphrase prompt in
+# 07-wifi-ap.sh: honour an existing value, honour the environment, otherwise
+# ask — but Enter skips.
 ENV_FILE="${INSTALL_DIR}/system/fpvlink.env"
 
 if [[ -f "$ENV_FILE" ]]; then
     EXISTING_PW="$(grep -E '^FPVLINK_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
-    EXISTING_NOAUTH="$(grep -E '^FPVLINK_ALLOW_NO_AUTH=1' "$ENV_FILE" 2>/dev/null || true)"
 else
-    EXISTING_PW=""; EXISTING_NOAUTH=""
+    EXISTING_PW=""
 fi
 
 WEB_PASSWORD="${FPVLINK_PASSWORD:-}"
 
-if [[ -n "$EXISTING_NOAUTH" ]]; then
-    warn "FPVLINK_ALLOW_NO_AUTH=1 is set — the dashboard will run with NO password."
-elif [[ -n "$EXISTING_PW" ]]; then
+if [[ -n "$EXISTING_PW" ]]; then
     info "Dashboard password already set (edit $ENV_FILE to change it)"
 elif [[ -z "$WEB_PASSWORD" ]]; then
     echo
     echo "  The dashboard can change config, stop capture mid-flight, and read logs."
-    echo "  It is reachable from every network this box joins, including the field AP,"
-    echo "  so it needs a password. Pick one you can type on a phone."
+    echo "  It is reachable from every network this box joins, including the field AP."
+    echo "  Setting a password here is optional — press Enter to skip and leave it open."
     echo
+    SKIPPED=0
     while [[ -z "$WEB_PASSWORD" ]]; do
-        read -r -s -p "  Dashboard password (8+ chars): " WEB_PASSWORD; echo
+        read -r -s -p "  Dashboard password (8+ chars, Enter to skip): " WEB_PASSWORD; echo
+        if [[ -z "$WEB_PASSWORD" ]]; then
+            warn "No password set — the dashboard will be open to anyone who can reach it."
+            SKIPPED=1
+            break
+        fi
         read -r -s -p "  Repeat: " WEB_PASSWORD_CONFIRM; echo
         if [[ "$WEB_PASSWORD" != "$WEB_PASSWORD_CONFIRM" ]]; then
             warn "Passwords do not match."; WEB_PASSWORD=""

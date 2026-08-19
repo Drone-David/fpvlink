@@ -711,9 +711,9 @@ app.use(express.json());
 // ─────────────────────────────────────────────
 // Authentication
 // ─────────────────────────────────────────────
-// Refuses to start unpassworded unless explicitly told to. This device puts a
-// dashboard that can rewrite config and stop capture mid-flight on a field AP,
-// so an open box has to be a decision someone made, not a default they missed.
+// Gates the dashboard, never the service. A missing password leaves the API
+// open and says so on every boot, but the box still starts: putting video on
+// HDMI is its job, and no configuration mistake should stop it doing that.
 const auth = createAuth({
   password:      process.env.FPVLINK_PASSWORD || '',
   sessionSecret: process.env.FPVLINK_SESSION_SECRET || '',
@@ -1307,28 +1307,15 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 // Start
 // ─────────────────────────────────────────────
 if (require.main === module) {
-  // Checked here rather than at module scope so that requiring server.js — as
-  // the tests do — cannot kill the process.
-  if (!auth.enabled && process.env.FPVLINK_ALLOW_NO_AUTH !== '1') {
-    for (const line of [
-      '',
-      'FPVLink will not start without a dashboard password.',
-      '',
-      '  Set one in /opt/fpvlink/system/fpvlink.env:',
-      '      FPVLINK_PASSWORD=<something you can type on a phone>',
-      '  then:  sudo systemctl restart fpvlink',
-      '',
-      '  Deliberately running an open box on a bench you trust?',
-      '      FPVLINK_ALLOW_NO_AUTH=1',
-      '',
-    ]) logger.error(line);
-    process.exit(1);
-  }
-
   server.listen(PORT, '0.0.0.0', () => {
     logger.info(`FPVLink server listening on http://0.0.0.0:${PORT}`);
     if (!auth.enabled) {
-      logger.warn('AUTH DISABLED via FPVLINK_ALLOW_NO_AUTH — anyone who can reach this port controls the box.');
+      // Loud, but never fatal. The box's job is to put video on HDMI, and a
+      // missing password must not stop it doing that — least of all mid-event.
+      // So this warns on every boot and keeps going.
+      logger.warn('DASHBOARD UNPROTECTED — no FPVLINK_PASSWORD is set, so anyone who can reach');
+      logger.warn('  this port can change config, stop capture, and read logs. Set a password in');
+      logger.warn('  system/fpvlink.env and restart to close it. Video is unaffected either way.');
     } else if (!process.env.FPVLINK_SESSION_SECRET) {
       logger.info('Auth enabled. FPVLINK_SESSION_SECRET is unset, so logins will not survive a restart.');
     } else {

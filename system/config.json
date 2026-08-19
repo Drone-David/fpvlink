@@ -124,7 +124,7 @@
   },
 
   "web": {
-    "_comment": "Embedded web UI / control API server (Node.js Express). Access requires the dashboard password from FPVLINK_PASSWORD in system/fpvlink.env; the service refuses to start without one. Requests from 127.0.0.1 are exempt so on-box scripts keep working.",
+    "_comment": "Embedded web UI / control API server (Node.js Express). If FPVLINK_PASSWORD is set in system/fpvlink.env the dashboard asks for it; if it is blank the dashboard is OPEN to anyone who can reach the port and the journal warns on every boot. The service starts either way — a missing password never stops the box working. Requests from 127.0.0.1 are always exempt so on-box scripts keep working.",
 
     "port": 8080,
     "_port_comment": "TCP port for the web server. Can be overridden with FPVLINK_PORT env var.",

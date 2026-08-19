@@ -306,10 +306,14 @@ There is no capture-side timestamp from the goggles, so true end-to-end glass-to
 
 ## Security
 
-**The dashboard requires a password.** It is set during `setup/04-service.sh`,
-lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`, and the service **refuses to
-start without one**. If you upgrade an older box and it will not come up, that is
-why — the journal tells you exactly what to set.
+**The dashboard takes a password if you set one.** `setup/04-service.sh` offers
+to set it, and it lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`.
+
+**Leaving it blank leaves the dashboard open**, and the journal says so on every
+boot. That is a real hole, not a soft default — but the service starts either
+way, deliberately. Putting video on HDMI is what this box is for, and no
+configuration mistake should stop it doing that at an event. Security that can
+ground the aircraft is not security anyone keeps.
 
 ### What the password protects
 
@@ -354,8 +358,8 @@ around.
   phone in your pocket. `04-service.sh` generates one for you.
 - **Five failed logins per minute per IP** trips a lockout.
 - **Sessions last 30 days.** Sign out from the header when you want to end one.
-- **Running open deliberately?** `FPVLINK_ALLOW_NO_AUTH=1` starts without a
-  password and warns on every boot. Bench boxes only — never with the AP running.
+- **Running open deliberately?** Just leave `FPVLINK_PASSWORD` blank. Fine on a
+  bench you control; do not do it with the field AP running.
 
 
 ## Troubleshooting
