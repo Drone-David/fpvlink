@@ -19,10 +19,20 @@ Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus 
 
 | Item | Notes |
 |---|---|
-| Orange Pi 5 Plus (4GB+) | RK3588 SoC, 2.5G Ethernet. **No eMMC module fitted** — see below |
+| [Orange Pi 5 Plus (4GB+)](https://amzn.to/4yauBi3) | RK3588 SoC, 2.5G Ethernet. **No eMMC module fitted** — see below |
+| [Case for the Orange Pi 5 Plus](https://amzn.to/4bUXPIX) | Optional. A bare board that travels to events in a bag does not stay bare for long |
 | 12V/2A barrel-jack PSU | Frees the USB-C port for goggles |
 | MicroSD card 32GB+ (A1/A2) | **The system drive**, not just install media — the box boots and runs from it permanently |
 | USB-C to USB-C cable × 2 | One to modify for Goggles 2, one spare |
+
+> **Affiliate links.** Where an item above links to Amazon, that is an affiliate
+> link — buy through it and this project earns a small commission at no extra
+> cost to you. They point at the parts actually used on the box this was built
+> and tested on, chosen before there was any commission involved. Buy them
+> anywhere you like; the build does not care where the parts came from.
+>
+> Nothing here is sold by this project. You source your own parts and assemble
+> the box yourself.
 
 ### Storage: the microSD is the system drive
 
