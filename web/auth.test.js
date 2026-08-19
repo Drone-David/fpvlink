@@ -125,3 +125,18 @@ test('the session cookie is HttpOnly, SameSite=Strict, and not Secure', () => {
   assert.match(h, /SameSite=Strict/);
   assert.doesNotMatch(h, /Secure/);
 });
+
+test('the standard shipped password is recognised as the default', () => {
+  const { DEFAULT_PASSWORD } = require('./auth.js');
+  const a = createAuth({ password: DEFAULT_PASSWORD, sessionSecret: 's' });
+  assert.strictEqual(a.usingDefaultPassword, true);
+  assert.strictEqual(a.enabled, true, 'the default is still a real password, not "no auth"');
+});
+
+test('a changed password is not flagged as the default', () => {
+  assert.strictEqual(createAuth({ password: 'something-else', sessionSecret: 's' }).usingDefaultPassword, false);
+});
+
+test('no password at all is not flagged as the default', () => {
+  assert.strictEqual(createAuth({ password: '', sessionSecret: 's' }).usingDefaultPassword, false);
+});

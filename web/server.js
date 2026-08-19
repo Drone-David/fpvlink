@@ -1316,6 +1316,8 @@ if (require.main === module) {
       logger.warn('DASHBOARD UNPROTECTED — no FPVLINK_PASSWORD is set, so anyone who can reach');
       logger.warn('  this port can change config, stop capture, and read logs. Set a password in');
       logger.warn('  system/fpvlink.env and restart to close it. Video is unaffected either way.');
+    } else if (auth.usingDefaultPassword) {
+      logger.warn('Dashboard is using the standard FPVLink password, which is published in the repo — fine on a trusted field, change it in system/fpvlink.env if the venue is not.');
     } else if (!process.env.FPVLINK_SESSION_SECRET) {
       logger.info('Auth enabled. FPVLINK_SESSION_SECRET is unset, so logins will not survive a restart.');
     } else {
