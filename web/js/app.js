@@ -176,9 +176,28 @@ function initResponsive() {
 // ─────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────
+// Shown only when the box actually has a password, so a deliberately open
+// bench box does not offer a control that cannot do anything.
+async function initAuthControls() {
+  const btn = $('signOut');
+  if (!btn) return;
+  try {
+    const { auth_enabled } = await (await fetch('/api/ping')).json();
+    if (!auth_enabled) return;
+  } catch { return; }
+
+  btn.hidden = false;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try { await fetch('/api/logout', { method: 'POST' }); } catch { /* leaving anyway */ }
+    location.replace('/login.html');
+  });
+}
+
 async function init() {
   initRouter();
   initResponsive();
+  initAuthControls();
 
   // Config first: the Outputs form and several Monitor labels read from it.
   try {

@@ -5,7 +5,7 @@
 
 'use strict';
 
-import { $, store, on, API, clearLogs, logCounts, pushLog } from './state.js';
+import { $, store, on, apiFetch, clearLogs, logCounts, pushLog } from './state.js';
 
 const LEVEL_TAG = { err: 'ERR', warn: 'WARN', ok: 'OK', info: 'INFO', debug: 'DEBUG' };
 
@@ -103,7 +103,7 @@ export async function downloadDiagnostics(btn) {
   btn.textContent = 'Collecting…';
 
   try {
-    const res = await fetch(API('/diagnostics'));
+    const res = await apiFetch('/diagnostics');
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `HTTP ${res.status}`);

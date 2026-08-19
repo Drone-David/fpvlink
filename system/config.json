@@ -124,16 +124,16 @@
   },
 
   "web": {
-    "_comment": "Embedded web UI / control API server (Node.js Express). THERE IS NO AUTHENTICATION: anyone who can reach this port can change config, start and stop capture, and upload or delete LUTs. Treat reachability as full control of the box.",
+    "_comment": "Embedded web UI / control API server (Node.js Express). Access requires the dashboard password from FPVLINK_PASSWORD in system/fpvlink.env; the service refuses to start without one. Requests from 127.0.0.1 are exempt so on-box scripts keep working.",
 
     "port": 8080,
     "_port_comment": "TCP port for the web server. Can be overridden with FPVLINK_PORT env var.",
 
     "allow_remote": false,
-    "_allow_remote_comment": "NOT IMPLEMENTED — this field is read by nothing. web/server.js calls server.listen(PORT, '0.0.0.0') unconditionally, so the dashboard is ALWAYS reachable from every interface the box has, including the field WiFi AP, whatever this is set to. Do not rely on it to keep the box private. An earlier comment here claimed false meant localhost-only; that was never true. See the Security section of README.md.",
+    "_allow_remote_comment": "NOT IMPLEMENTED — this field is read by nothing. web/server.js calls server.listen(PORT, '0.0.0.0') unconditionally, so the dashboard is reachable from every interface the box has, including the field WiFi AP, whatever this is set to. Since the dashboard now requires a password, reachability is no longer the same as control — but do not rely on this field for anything. Same for web.port: PORT is hardcoded to 8080 in web/server.js.",
 
     "session_secret": "",
-    "_session_secret_comment": "NOT IMPLEMENTED — there are no sessions and no login. express-session is not a dependency and nothing reads this field. Kept only so the shape of the config does not change under anyone who already edited it."
+    "_session_secret_comment": "NOT READ FROM HERE. Session signing is configured with FPVLINK_SESSION_SECRET in system/fpvlink.env, not from config.json — secrets do not belong in a file the dashboard itself can rewrite via POST /api/config. Kept only so the shape of the config does not change under anyone who already edited it."
   },
 
   "network": {

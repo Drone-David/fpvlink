@@ -44,6 +44,11 @@
       <button class="tab" role="tab" id="tab-logs"    aria-controls="view-logs"    aria-selected="false" data-tab="logs">Logs</button>
       <button class="tab" role="tab" id="tab-system"  aria-controls="view-system"  aria-selected="false" data-tab="system">System</button>
     </nav>
+
+    <!-- Hidden until /api/ping confirms auth is on, so a box deliberately run
+         open with FPVLINK_ALLOW_NO_AUTH does not show a control that does
+         nothing. -->
+    <button class="hdr-signout" id="signOut" type="button" hidden>Sign out</button>
   </header>
 
   <main class="main">

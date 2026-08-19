@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FPVLink — Sign in</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  /* Self-contained: styles.css is the dashboard's, and the login page is the
+     one screen that must render before anything else is trusted. */
+  .login-wrap {
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 22rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: 1.75rem 1.5rem;
+  }
+  .login-brand {
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: .02em;
+    color: var(--text-strong);
+    margin-bottom: .25rem;
+  }
+  .login-sub {
+    font-size: .78rem;
+    color: var(--text-mute);
+    margin-bottom: 1.5rem;
+    line-height: 1.5;
+  }
+  .login-label {
+    display: block;
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--text-dim);
+    margin-bottom: .5rem;
+  }
+  .login-input {
+    width: 100%;
+    background: var(--surface-sunk);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    color: var(--text);
+    padding: .7rem .75rem;
+    font-size: 1rem;          /* >=16px stops iOS zooming the field on focus */
+    margin-bottom: 1rem;
+  }
+  .login-input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: transparent;
+  }
+  .login-btn {
+    width: 100%;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: 0;
+    border-radius: var(--r-sm);
+    padding: .75rem;
+    font-size: .9rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .login-btn:disabled { opacity: .55; cursor: default; }
+  .login-error {
+    margin-top: 1rem;
+    font-size: .78rem;
+    color: var(--err-text);
+    line-height: 1.5;
+    min-height: 1.2em;
+  }
+</style>
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="login-card" id="form" autocomplete="on">
+      <div class="login-brand">FPVLink</div>
+      <div class="login-sub">Sign in to reach the dashboard.</div>
+
+      <label class="login-label" for="password">Password</label>
+      <input class="login-input" type="password" id="password" name="password"
+             autocomplete="current-password" required autofocus
+             enterkeyhint="go" aria-describedby="error">
+
+      <button class="login-btn" type="submit" id="submit">Sign in</button>
+      <div class="login-error" id="error" role="alert" aria-live="polite"></div>
+    </form>
+  </div>
+
+<script>
+'use strict';
+const form   = document.getElementById('form');
+const field  = document.getElementById('password');
+const button = document.getElementById('submit');
+const error  = document.getElementById('error');
+
+// Only ever redirect to a path on this origin. Taking the raw ?next= value
+// would let a crafted link bounce an operator off the box after login.
+function safeNext() {
+  const raw = new URLSearchParams(location.search).get('next') || '/';
+  return raw.startsWith('/') && !raw.startsWith('//') ? raw : '/';
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  error.textContent = '';
+  button.disabled = true;
+  button.textContent = 'Signing in…';
+
+  try {
+    const res = await fetch('/api/login', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ password: field.value }),
+    });
+
+    if (res.ok) { location.replace(safeNext()); return; }
+
+    const body = await res.json().catch(() => ({}));
+    error.textContent = res.status === 429
+      ? (body.error || 'Too many attempts. Wait a minute and try again.')
+      : (body.error || 'Incorrect password.');
+    field.select();
+  } catch {
+    error.textContent = 'Could not reach the box. Check you are still on its network.';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Sign in';
+  }
+});
+</script>
+</body>
+</html>

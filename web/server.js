@@ -17,6 +17,7 @@ const { spawn, execFile } = require('child_process');
 const readline       = require('readline');
 const dgram          = require('dgram');
 const multer         = require('multer');
+const { createAuth } = require('./auth');
 
 // ─────────────────────────────────────────────
 // Paths
@@ -150,6 +151,11 @@ function log(level, msg) {
   if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
   broadcastLog(line);
 }
+
+// Declared up here, not next to the WebSocket server it belongs to, because
+// logger.* fans out to broadcast() and any log emitted during module init would
+// otherwise hit this in the temporal dead zone and kill the process on require.
+const wsClients = new Set();
 
 const logger = {
   info:  (m) => log('INFO',  m),
@@ -701,6 +707,72 @@ function spawnCapture(cfg) {
 // (pipeline and standby are now managed by systemd)
 const app = express();
 app.use(express.json());
+
+// ─────────────────────────────────────────────
+// Authentication
+// ─────────────────────────────────────────────
+// Refuses to start unpassworded unless explicitly told to. This device puts a
+// dashboard that can rewrite config and stop capture mid-flight on a field AP,
+// so an open box has to be a decision someone made, not a default they missed.
+const auth = createAuth({
+  password:      process.env.FPVLINK_PASSWORD || '',
+  sessionSecret: process.env.FPVLINK_SESSION_SECRET || '',
+});
+
+// Served before login so the page can render and submit. styles.css and the
+// fonts leak nothing; /api/login is the way in; /api/ping lets the client tell
+// "logged out" apart from "box unreachable" without following a redirect.
+const PUBLIC_PATHS = new Set([
+  '/login.html', '/styles.css', '/api/login', '/api/ping', '/favicon.ico',
+]);
+
+function isPublicPath(p) {
+  return PUBLIC_PATHS.has(p) || p.startsWith('/fonts/');
+}
+
+app.use((req, res, next) => {
+  if (isPublicPath(req.path) || auth.isAuthorized(req)) return next();
+
+  // An API caller wants a status code it can branch on; a browser wants the
+  // login page. Guessing wrong means either a redirect rendered into a JSON
+  // parser or a raw 401 shown to an operator holding a phone.
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  const next_ = encodeURIComponent(req.originalUrl || '/');
+  return res.redirect(302, `/login.html?next=${next_}`);
+});
+
+app.post('/api/login', (req, res) => {
+  const ip = (req.socket && req.socket.remoteAddress) || 'unknown';
+
+  if (auth.isLockedOut(ip)) {
+    logger.warn(`Login locked out for ${ip}`);
+    return res.status(429).json({ error: 'Too many attempts. Wait a minute and try again.' });
+  }
+
+  const password = req.body && req.body.password;
+  if (typeof password !== 'string' || !auth.checkPassword(password)) {
+    auth.noteFailure(ip);
+    logger.warn(`Failed login from ${ip}`);
+    return res.status(401).json({ error: 'Incorrect password.' });
+  }
+
+  auth.clearFailures(ip);
+  logger.info(`Login from ${ip}`);
+  res.setHeader('Set-Cookie', auth.cookieHeader(auth.mintToken()));
+  res.json({ ok: true });
+});
+
+app.post('/api/logout', (req, res) => {
+  res.setHeader('Set-Cookie', auth.clearCookieHeader());
+  res.json({ ok: true });
+});
+
+// Cheap "am I still signed in?" probe for the client's reconnect path.
+app.get('/api/ping', (req, res) => {
+  res.json({ ok: true, authenticated: auth.isAuthorized(req), auth_enabled: auth.enabled });
+});
 // Without explicit headers the browser applies heuristic freshness and can keep
 // serving a previous dashboard build after a deploy — the operator then debugs
 // a UI that is not the one on the device. Markup and code always revalidate
@@ -971,9 +1043,21 @@ app.get('/api/diagnostics', (req, res) => {
 // WebSocket server
 // ─────────────────────────────────────────────
 const server = http.createServer(app);
-const wss    = new WebSocket.Server({ server, path: '/ws' });
 
-const wsClients = new Set();
+// The socket carries live stats and the full log stream, so it needs the same
+// gate as the REST API. Rejecting at the handshake means an unauthenticated
+// client never gets an open socket at all, rather than one that is silently
+// starved — the browser sees a clean 401 and the client can act on it.
+const wss = new WebSocket.Server({
+  server,
+  path: '/ws',
+  verifyClient: (info, done) => {
+    if (auth.isAuthorized(info.req)) return done(true);
+    logger.warn(`Rejected unauthenticated WebSocket from ${info.req.socket.remoteAddress}`);
+    return done(false, 401, 'Authentication required');
+  },
+});
+
 
 wss.on('connection', (ws, req) => {
   const ip = req.socket.remoteAddress;
@@ -1223,8 +1307,33 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 // Start
 // ─────────────────────────────────────────────
 if (require.main === module) {
+  // Checked here rather than at module scope so that requiring server.js — as
+  // the tests do — cannot kill the process.
+  if (!auth.enabled && process.env.FPVLINK_ALLOW_NO_AUTH !== '1') {
+    for (const line of [
+      '',
+      'FPVLink will not start without a dashboard password.',
+      '',
+      '  Set one in /opt/fpvlink/system/fpvlink.env:',
+      '      FPVLINK_PASSWORD=<something you can type on a phone>',
+      '  then:  sudo systemctl restart fpvlink',
+      '',
+      '  Deliberately running an open box on a bench you trust?',
+      '      FPVLINK_ALLOW_NO_AUTH=1',
+      '',
+    ]) logger.error(line);
+    process.exit(1);
+  }
+
   server.listen(PORT, '0.0.0.0', () => {
     logger.info(`FPVLink server listening on http://0.0.0.0:${PORT}`);
+    if (!auth.enabled) {
+      logger.warn('AUTH DISABLED via FPVLINK_ALLOW_NO_AUTH — anyone who can reach this port controls the box.');
+    } else if (!process.env.FPVLINK_SESSION_SECRET) {
+      logger.info('Auth enabled. FPVLINK_SESSION_SECRET is unset, so logins will not survive a restart.');
+    } else {
+      logger.info('Auth enabled.');
+    }
     logger.info(`Config path: ${CONFIG_PATH}`);
     
     const cfg = readConfig();
