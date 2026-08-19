@@ -644,4 +644,4 @@ plugin_init (GstPlugin * plugin)
 
 GST_PLUGIN_DEFINE (GST_VERSION_MAJOR, GST_VERSION_MINOR,
     fpvlut3d, "FPVLink 3D LUT color grading",
-    plugin_init, "1.0", "LGPL", "fpvlink", "https://github.com/fpvlink/fpvlink")
+    plugin_init, "1.0", "MIT/X11", "fpvlink", "https://github.com/Drone-David/fpvlink")
