@@ -1,6 +1,6 @@
 [Unit]
 Description=FPVLink Always-On Video Pipeline
-Documentation=https://github.com/yourorg/fpvlink
+Documentation=https://github.com/Drone-David/fpvlink
 After=network.target network-online.target
 Wants=network-online.target
 

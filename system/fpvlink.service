@@ -19,7 +19,7 @@
 
 [Unit]
 Description=FPVLink Streaming Service
-Documentation=https://github.com/yourorg/fpvlink
+Documentation=https://github.com/Drone-David/fpvlink
 
 # Start after the network stack is up. If your SRT/RTMP destination is on a
 # VPN, add the VPN service here (e.g. After=wg-quick@wg0.service).

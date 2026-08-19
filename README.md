@@ -9,6 +9,10 @@ Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus 
 **Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor) · HDMI 3D LUT · SRT · RTMP · dashboard live preview
 **Output planned, not yet wired up:** Local recording · RTSP
 
+> **Security:** the dashboard has **no authentication of any kind**, and it listens on
+> every interface. Anyone who can reach port 8080 has full control of the box.
+> Read [Security](#security) before you put one on a network you do not control.
+
 ---
 
 ## Hardware you need
@@ -300,6 +304,47 @@ There is no capture-side timestamp from the goggles, so true end-to-end glass-to
 
 ---
 
+## Security
+
+Read this before putting a box on a network you do not control. None of the
+below is a bug report — it is the current design, stated plainly.
+
+**There is no authentication.** No login, no password, no token, no session. The
+API is wide open to anyone who can reach the port. With one HTTP request they
+can:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/config` | Rewrite the device configuration |
+| `POST /api/capture/enable` · `/disable` | Start or stop capture mid-flight |
+| `POST /api/lut-upload` | Write a file into the LUT directory |
+| `DELETE /api/luts/:id` | Delete a LUT |
+| `GET /api/diagnostics` · `/api/logs` | Read logs and system detail |
+
+**It listens on every interface.** `web/server.js` calls
+`server.listen(PORT, '0.0.0.0')` unconditionally. The `web.allow_remote` field in
+`system/config.json` is **read by nothing** — setting it to `false` does not bind
+to localhost and never did. If the box has an IP on a network, the dashboard is
+on that network.
+
+**The field WiFi AP is a second front door.** `setup/07-wifi-ap.sh` puts the
+dashboard on `10.10.20.1:8080` for anyone associated to the AP. The AP is
+WPA2-PSK, so the passphrase you choose there is, in practice, the only thing
+standing between a stranger at a flying field and control of the box. Choose it
+accordingly, and do not reuse one.
+
+**What this is safe for:** a box on your own bench, your own field AP, or a race
+LAN you trust. **What it is not safe for:** a shared venue network, a hotel or
+event WiFi, or anything port-forwarded to the internet. Do not forward 8080.
+
+Uploads are constrained — `.cube` extension only, 10 MB cap, server-generated
+filenames — so the LUT endpoint is not an arbitrary-write primitive, but it is
+still an unauthenticated write.
+
+Adding real auth is on the [Roadmap](#roadmap) and is the one item that should
+land before anyone runs this somewhere public.
+
+
 ## Troubleshooting
 
 ### Goggles 2 not detected
@@ -376,6 +421,7 @@ fpvlink/
 
 ## Roadmap
 
+- [ ] **Authentication for the dashboard and API** — see [Security](#security). The one item that should land before anyone runs this on a network they do not control
 - [ ] RTSP output (needs `gst-rtsp-server`, a pull-based server architecture unlike SRT/RTMP's push sinks, and its own dashboard UI — not yet started)
 - [ ] Local recording
 - [ ] Measure real glass-to-glass latency (needs a capture-side timestamp from the goggles)
@@ -384,6 +430,33 @@ fpvlink/
 - [ ] Multi-camera: V1/V2 on USB-A + Goggles 2 on USB-C simultaneously
 - [ ] Telemetry overlay (OSD from goggles data channel)
 - [ ] Mobile companion app
+
+---
+
+## License
+
+FPVLink is released under the [MIT License](LICENSE) — use it, modify it, build
+boxes with it, sell them.
+
+Bundled third-party material and the prior protocol work this builds on are
+credited in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The JetBrains Mono
+files under `web/fonts/` are OFL-1.1 and carry their own license file, which must
+travel with them if you fork.
+
+### Not affiliated with DJI
+
+DJI, Goggles 2, Goggles 3, Integra, and related marks are trademarks of SZ DJI
+Technology Co., Ltd. This is an independent project, not affiliated with,
+authorized by, or endorsed by DJI. Those names appear here only to identify the
+hardware FPVLink interoperates with. The USB protocol support was developed for
+interoperability, from observed traffic and from prior public community work.
+
+### Warranty
+
+There is none — see the LICENSE. This software drives hardware you fly. The
+cable modification in [Hardware you need](#hardware-you-need) involves cutting a
+conductor in a USB-C cable; get it wrong and you can damage goggles that cost
+more than the box. Build and fly at your own risk.
 
 ---
 
