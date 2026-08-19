@@ -9,13 +9,13 @@
   },
 
   "capture": {
-    "_comment": "USB capture layer configuration for DJI FPV goggles.",
+    "_comment": "USB capture layer configuration. IMPORTANT: the usb_vid/usb_pid/interface/ep_out/ep_in fields below describe the V1/V2 path only — the Pi acting as USB HOST to Goggles V1/V2, which is what capture/v1v2.py and capture/host_capture.py drive. They are NOT the Goggles 2/3/Integra/N3 path: there the roles are reversed, the Pi is the gadget and the goggles are the host, and the identity the Pi presents lives in DESCRIPTOR_TEMPLATE in capture/goggles2.py. Do not expect changes here to affect Goggles 2. strict_duml_ack and oneshot_app_register below DO apply to the Goggles 2 path.",
 
     "goggles_model": "auto",
     "_goggles_model_comment": "Which goggles variant to expect on USB. Options: 'v1v2' (DJI FPV Goggles V1/V2), 'goggles2' (DJI Goggles 2 / Goggles Integra), 'auto' (try both, slower init).",
 
     "interface": 0,
-    "_interface_comment": "USB interface number that carries the video bulk endpoints.",
+    "_interface_comment": "USB interface number carrying the video bulk endpoints. V1/V2 path only. Override per-run with v1v2.py --iface.",
 
     "ep_out": 1,
     "_ep_out_comment": "USB bulk-OUT endpoint number (host → device, for control commands).",
@@ -24,10 +24,10 @@
     "_ep_in_comment": "USB bulk-IN endpoint number (device → host, receives raw H.265 stream).",
 
     "usb_vid": "0x2CA3",
-    "_usb_vid_comment": "USB Vendor ID for DJI devices (0x2CA3). Do not change unless using a different brand.",
+    "_usb_vid_comment": "USB Vendor ID to look for on the bus (0x2CA3 = DJI). V1/V2 path only. Accepts 0x-prefixed hex or a decimal number; anything unparseable falls back to 0x2CA3. Override per-run with v1v2.py --vid.",
 
     "usb_pid": "auto",
-    "_usb_pid_comment": "USB Product ID. 'auto' probes for known DJI PIDs (0x001F for V1/V2, 0x0046 for Goggles 2). Set explicitly to lock to one model.",
+    "_usb_pid_comment": "USB Product ID. 'auto' (default) accepts any PID under the vendor ID above. Set a specific value like '0x001F' to lock to one model. V1/V2 path only. Override per-run with v1v2.py --pid.",
 
     "read_timeout_ms": 5000,
     "_read_timeout_ms_comment": "Milliseconds to wait for a USB bulk read before timing out and retrying.",
@@ -127,10 +127,10 @@
     "_comment": "Embedded web UI / control API server (Node.js Express). If FPVLINK_PASSWORD is set in system/fpvlink.env the dashboard asks for it; if it is blank the dashboard is OPEN to anyone who can reach the port and the journal warns on every boot. The service starts either way — a missing password never stops the box working. Requests from 127.0.0.1 are always exempt so on-box scripts keep working.",
 
     "port": 8080,
-    "_port_comment": "TCP port for the web server. Can be overridden with FPVLINK_PORT env var.",
+    "_port_comment": "TCP port for the web server and dashboard. FPVLINK_PORT in system/fpvlink.env overrides it. Needs a service restart. Values outside 1-65535 are ignored and 8080 is used; journalctl names both the port and where it came from at startup.",
 
-    "allow_remote": false,
-    "_allow_remote_comment": "NOT IMPLEMENTED — this field is read by nothing. web/server.js calls server.listen(PORT, '0.0.0.0') unconditionally, so the dashboard is reachable from every interface the box has, including the field WiFi AP, whatever this is set to. Since the dashboard now requires a password, reachability is no longer the same as control — but do not rely on this field for anything. Same for web.port: PORT is hardcoded to 8080 in web/server.js.",
+    "allow_remote": true,
+    "_allow_remote_comment": "true (default) = the dashboard listens on every interface, which is what you want: the whole point is reaching it from a phone or laptop, including over the field AP. false = bind 127.0.0.1 only, reachable from the box itself and nothing else — useful for a box you administer over SSH and never want exposed. Changing this needs a service restart. Only an explicit false binds loopback; a missing key means all interfaces, because a box that silently went unreachable would be worse than the exposure this prevents. The startup line in journalctl always names the address it bound to.",
 
     "session_secret": "",
     "_session_secret_comment": "NOT READ FROM HERE. Session signing is configured with FPVLINK_SESSION_SECRET in system/fpvlink.env, not from config.json — secrets do not belong in a file the dashboard itself can rewrite via POST /api/config. Kept only so the shape of the config does not change under anyone who already edited it."
