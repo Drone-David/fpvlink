@@ -19,10 +19,44 @@ Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus 
 
 | Item | Notes |
 |---|---|
-| Orange Pi 5 Plus (4GB+) | RK3588 SoC, 256GB eMMC, 2.5G Ethernet |
+| [Orange Pi 5 Plus (4GB+)](https://amzn.to/4yauBi3) | RK3588 SoC, 2.5G Ethernet. **No eMMC module fitted** — see below |
+| [Case for the Orange Pi 5 Plus](https://amzn.to/4bUXPIX) | Optional. A bare board that travels to events in a bag does not stay bare for long |
 | 12V/2A barrel-jack PSU | Frees the USB-C port for goggles |
-| MicroSD card 32GB+ (A1/A2) | For flashing Armbian |
+| MicroSD card 32GB+ (A1/A2) | **The system drive**, not just install media — the box boots and runs from it permanently |
 | USB-C to USB-C cable × 2 | One to modify for Goggles 2, one spare |
+
+> **Affiliate links.** Where an item above links to Amazon, that is an affiliate
+> link — buy through it and this project earns a small commission at no extra
+> cost to you. They point at the parts actually used on the box this was built
+> and tested on, chosen before there was any commission involved. Buy them
+> anywhere you like; the build does not care where the parts came from.
+>
+> Nothing here is sold by this project. You source your own parts and assemble
+> the box yourself.
+
+### Storage: the microSD is the system drive
+
+There is **no eMMC on this build** (verified on the live box 2026-08-16: `lsblk`
+shows only `mmcblk1`, the 29.4 GB microSD, plus 16 MB of SPI flash). The card is
+not install media that you can pull after setup — it holds the OS, `/opt/fpvlink`,
+and everything else, for the life of the box.
+
+Two consequences worth knowing before you build one:
+
+- **Follow [`06-filesystem.sh`](#day-2-install-fpvlink) and do not skip it.** Running
+  the whole system from a card that gets powered off by unplugging it is exactly
+  the situation that zeroed a source file and killed the dashboard once already.
+- **Video does not go here.** Root is ~29 GB with ~24 GB free, and at measured
+  bitrates an hour of flight is 4–20 GB. More importantly the card is kept
+  deliberately *quiet* (~92 MB/hour; `/var/log` is on zram), and recording would
+  multiply that by ~47×, on the card holding the OS. Local recording is therefore
+  designed around a **separate NVMe SSD**, never the card — see
+  [`docs/recording-research.md`](docs/recording-research.md).
+
+The board's **M.2 M-key slot (PCIe 3.0 x4, 2280) is empty** and is the intended
+home for recordings — as a **data volume only**, not a boot device, so a drive
+failure can never stop the box from booting and streaming. An eMMC module is also
+a reasonable upgrade for the OS, but nothing in FPVLink assumes either exists.
 
 ### USB-C cable modification (Goggles 2 only — skip for Goggles 3/Integra/N3)
 
@@ -306,26 +340,14 @@ There is no capture-side timestamp from the goggles, so true end-to-end glass-to
 
 ## Security
 
-**Every box ships with the same dashboard password:**
+**The dashboard takes a password if you set one.** `setup/04-service.sh` offers
+to set it, and it lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`.
 
-```
-fpvlink12345
-```
-
-That is deliberate. A rack of boxes with per-unit passwords is unusable at an
-event, and an operator should be able to walk up to any FPVLink and get in. It
-lives in `FPVLINK_PASSWORD` in `system/fpvlink.env`.
-
-> **Change it if the box will be on a network you do not control.** The standard
-> password is published in this repo, so it is not a secret from anyone who has
-> seen the project. It keeps out a passer-by and a casual scan of the venue
-> network; it does not keep out someone who knows what this box is. Edit
-> `system/fpvlink.env` and `sudo systemctl restart fpvlink`.
-
-**Blanking it leaves the dashboard open**, and the journal says so on every boot.
-The service starts either way, deliberately — putting video on HDMI is what this
-box is for, and no password problem should stop it doing that at an event.
-Security that can ground the aircraft is not security anyone keeps.
+**Leaving it blank leaves the dashboard open**, and the journal says so on every
+boot. That is a real hole, not a soft default — but the service starts either
+way, deliberately. Putting video on HDMI is what this box is for, and no
+configuration mistake should stop it doing that at an event. Security that can
+ground the aircraft is not security anyone keeps.
 
 ### What the password protects
 
@@ -372,9 +394,6 @@ around.
 - **Sessions last 30 days.** Sign out from the header when you want to end one.
 - **Running open deliberately?** Just leave `FPVLINK_PASSWORD` blank. Fine on a
   bench you control; do not do it with the field AP running.
-- **The journal names it** when a box is still on the standard password, so
-  `journalctl -u fpvlink | grep standard` tells you which of your boxes you
-  never changed.
 
 
 ## Troubleshooting
