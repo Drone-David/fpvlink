@@ -448,6 +448,12 @@ organizations.
 **You may not** sell it, sell boxes built on it, or use it commercially.
 Commercial rights are reserved to the copyright holder.
 
+**Running paid or sponsored events** is commercial use, and there is a cheap tier
+for it: an **Event Licence at $50/year** covers one organisation for unlimited
+events and unlimited boxes. Club nights, practice sessions and anything with no
+gate fee need nothing. See [LICENSING.md](LICENSING.md), and if you are unsure
+which side of the line you are on, open an issue and ask.
+
 **Want a box rather than a build?** Selling assembled units is exactly the case
 this licence reserves. Open an issue if you would rather buy one than source an
 Orange Pi and cut a USB-C cable. Commercial licensing enquiries go the same way.
