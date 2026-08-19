@@ -1,0 +1,9 @@
+# GitHub Sponsors configuration.
+#
+# Uncomment the line below AFTER enabling GitHub Sponsors on the Drone-David
+# account (github.com/sponsors — it needs bank and tax details, so it has to be
+# done by hand). Until then the line stays commented, because a FUNDING.yml
+# pointing at an account without Sponsors enabled renders a Sponsor button that
+# leads nowhere.
+#
+# github: Drone-David
