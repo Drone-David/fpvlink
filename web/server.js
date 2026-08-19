@@ -132,7 +132,37 @@ function writeLutsManifest(manifest) {
   fs.writeFileSync(LUTS_MANIFEST, JSON.stringify(manifest, null, 2), 'utf8');
 }
 
-const PORT = 8080;
+// Port and bind address come from system/config.json's web.* block, with
+// FPVLINK_PORT overriding. Read straight from the file rather than via
+// readConfig(): this runs before the logger exists, and readConfig() flattens
+// the nested blocks for the dashboard rather than preserving web.*.
+const { PORT, BIND_ADDR, WEB_CONFIG_NOTE } = (() => {
+  let web = {};
+  try {
+    web = (JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).web) || {};
+  } catch { /* missing or malformed config falls through to the defaults */ }
+
+  const envPort = parseInt(process.env.FPVLINK_PORT, 10);
+  const cfgPort = parseInt(web.port, 10);
+  let port = 8080;
+  let portFrom = 'the default';
+  if (Number.isInteger(envPort) && envPort > 0 && envPort < 65536) {
+    port = envPort; portFrom = 'FPVLINK_PORT';
+  } else if (Number.isInteger(cfgPort) && cfgPort > 0 && cfgPort < 65536) {
+    port = cfgPort; portFrom = 'config.json web.port';
+  }
+
+  // Only an explicit false binds loopback. Absent means "not configured", and a
+  // box that silently became unreachable because a key was missing would be a
+  // worse failure than the one this field exists to prevent.
+  const loopbackOnly = web.allow_remote === false;
+
+  return {
+    PORT: port,
+    BIND_ADDR: loopbackOnly ? '127.0.0.1' : '0.0.0.0',
+    WEB_CONFIG_NOTE: { portFrom, loopbackOnly },
+  };
+})();
 
 // ─────────────────────────────────────────────
 // Logger
@@ -1307,8 +1337,15 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 // Start
 // ─────────────────────────────────────────────
 if (require.main === module) {
-  server.listen(PORT, '0.0.0.0', () => {
-    logger.info(`FPVLink server listening on http://0.0.0.0:${PORT}`);
+  server.listen(PORT, BIND_ADDR, () => {
+    logger.info(`FPVLink server listening on http://${BIND_ADDR}:${PORT} (port from ${WEB_CONFIG_NOTE.portFrom})`);
+    if (WEB_CONFIG_NOTE.loopbackOnly) {
+      // Worth a warning rather than an info line: this is the setting that makes
+      // a box look dead from the network, and the journal is where someone will
+      // come looking when the dashboard stops answering at a field.
+      logger.warn('web.allow_remote is false — the dashboard is reachable only from the box itself.');
+      logger.warn('  Nothing on your network or the field AP can reach it. Set it true in system/config.json to change that.');
+    }
     if (!auth.enabled) {
       // Loud, but never fatal. The box's job is to put video on HDMI, and a
       // missing password must not stop it doing that — least of all mid-event.

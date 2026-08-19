@@ -574,10 +574,11 @@ It will log everything the goggles send during USB enumeration. You'll see outpu
    as hex, e.g. `0x01` and `0x82`
 6. Restart the service: `sudo systemctl restart fpvlink-pipeline`
 
-> **Do not edit `capture.usb_vid`, `usb_pid`, `ep_out` or `ep_in` in
-> `system/config.json` instead — nothing reads them.** Those fields are inert;
-> the values that matter are the ones in `goggles2.py` above. This is a known
-> wart, listed on the [Roadmap](#roadmap).
+> **`capture.usb_vid`, `usb_pid`, `interface`, `ep_out` and `ep_in` in
+> `system/config.json` are a different path and will not help here.** Those
+> describe the Pi acting as USB *host* to Goggles V1/V2. For Goggles 2 the roles
+> are reversed — the Pi is the gadget, the goggles are the host — so the values
+> that matter are the ones in `goggles2.py` above.
 
 ---
 
@@ -662,7 +663,6 @@ fpvlink/
 
 ## Roadmap
 
-- [ ] Make the inert `config.json` fields real or remove them — `capture.usb_vid`, `usb_pid`, `ep_out`, `ep_in`, `web.allow_remote` and `web.port` are all read by nothing today, which makes the config file a trap
 - [ ] TLS for the dashboard, so the password is not sent in the clear on the field AP
 - [ ] RTSP output (needs `gst-rtsp-server`, a pull-based server architecture unlike SRT/RTMP's push sinks, and its own dashboard UI — not yet started)
 - [ ] Local recording

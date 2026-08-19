@@ -53,7 +53,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import os
 import sys
 import socket
 import time
@@ -75,6 +77,57 @@ except ImportError:
 
 #: DJI vendor ID (shared across all DJI USB devices)
 DJI_VID: int = 0x2CA3
+
+
+# ---------------------------------------------------------------------------
+# Defaults from system/config.json
+# ---------------------------------------------------------------------------
+#
+# The capture.* block describes THIS path — the Pi acting as USB host to
+# Goggles V1/V2. It is not the Goggles 2 path: there the Pi is the gadget and
+# the goggles are the host, and the identity it presents lives in
+# goggles2.py's DESCRIPTOR_TEMPLATE, which is a different thing entirely and is
+# deliberately not driven from here.
+#
+# Explicit command-line flags still win, so anything already scripted against
+# this tool keeps working unchanged.
+
+_CONFIG_PATH = os.environ.get(
+    "FPVLINK_CONFIG",
+    os.path.join(os.path.dirname(__file__), "..", "system", "config.json"),
+)
+
+
+def _config_defaults() -> dict:
+    """Read capture.* from config.json, falling back to the built-in values.
+
+    Never raises. A missing or malformed config must not stop a diagnostic tool
+    from running — that is exactly when you most want to run it.
+    """
+    out = {"vid": DJI_VID, "pid": None, "iface": 0, "ep_out": 1, "ep_in": 2}
+    try:
+        with open(_CONFIG_PATH) as f:
+            cap = json.load(f).get("capture", {})
+    except Exception:
+        return out
+
+    def _as_int(v):
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.strip() and v.strip().lower() != "auto":
+            try:
+                return int(v, 0)
+            except ValueError:
+                return None
+        return None
+
+    for key, cfg_key in (("vid", "usb_vid"), ("pid", "usb_pid"),
+                         ("iface", "interface"), ("ep_out", "ep_out"),
+                         ("ep_in", "ep_in")):
+        val = _as_int(cap.get(cfg_key))
+        if val is not None:
+            out[key] = val
+    return out
 
 #: 4-byte magic that tells the goggles to start the video stream
 RMVT_START: bytes = bytes([0x52, 0x4D, 0x56, 0x54])       # "RMVT"
@@ -536,16 +589,17 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="List all USB interfaces and endpoints, then exit.")
     p.add_argument("--capture", action="store_true",
                    help="Stream video bytes to stdout.")
-    p.add_argument("--vid",    type=lambda x: int(x, 0), default=DJI_VID,
-                   help="USB Vendor ID (default: 0x2CA3).")
-    p.add_argument("--pid",    type=lambda x: int(x, 0), default=None,
-                   help="USB Product ID (default: any DJI PID).")
-    p.add_argument("--iface",  type=int, default=0,
-                   help="Interface number (default: 0).")
-    p.add_argument("--ep-out", type=int, default=1, dest="ep_out",
-                   help="Bulk-OUT endpoint number (default: 1).")
-    p.add_argument("--ep-in",  type=int, default=2, dest="ep_in",
-                   help="Bulk-IN endpoint number (default: 2).")
+    d = _config_defaults()
+    p.add_argument("--vid",    type=lambda x: int(x, 0), default=d["vid"],
+                   help=f"USB Vendor ID (config capture.usb_vid, currently 0x{d['vid']:04X}).")
+    p.add_argument("--pid",    type=lambda x: int(x, 0), default=d["pid"],
+                   help="USB Product ID (config capture.usb_pid; 'auto' means any DJI PID).")
+    p.add_argument("--iface",  type=int, default=d["iface"],
+                   help=f"Interface number (config capture.interface, currently {d['iface']}).")
+    p.add_argument("--ep-out", type=int, default=d["ep_out"], dest="ep_out",
+                   help=f"Bulk-OUT endpoint number (config capture.ep_out, currently {d['ep_out']}).")
+    p.add_argument("--ep-in",  type=int, default=d["ep_in"], dest="ep_in",
+                   help=f"Bulk-IN endpoint number (config capture.ep_in, currently {d['ep_in']}).")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Enable DEBUG logging.")
     return p
