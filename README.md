@@ -13,6 +13,24 @@ Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus 
 > listens on every interface, so read [Security](#security) before putting a box
 > on a network you do not control.
 
+### Do I need to be a programmer?
+
+No. You need to be comfortable copying commands into a terminal and reading what
+comes back. Everything is a script you run in order; nothing here asks you to
+write code, and where a step needs a decision it says so.
+
+If you have never used a Linux terminal at all, the steps that will be new are
+**SSH** (connecting to the box from your own computer — explained in step 4) and
+`sudo` (running a command as administrator — just type it as written).
+
+Besides the parts list below you will need, for setup only:
+
+- **Another computer** — Mac, Windows or Linux — to flash the card and connect to the box
+- **A monitor and USB keyboard** for the first boot, before the box is on your network
+- **A network** the box can join, by Ethernet cable or WiFi
+
+After setup the box runs headless: power and goggles, nothing else.
+
 ---
 
 ## Hardware you need
@@ -43,7 +61,7 @@ and everything else, for the life of the box.
 
 Two consequences worth knowing before you build one:
 
-- **Follow [`06-filesystem.sh`](#day-2-install-fpvlink) and do not skip it.** Running
+- **Follow [`06-filesystem.sh`](#run-the-scripts-in-order) and do not skip it.** Running
   the whole system from a card that gets powered off by unplugging it is exactly
   the situation that zeroed a source file and killed the dashboard once already.
 - **Video does not go here.** Root is ~29 GB with ~24 GB free, and at measured
@@ -93,69 +111,141 @@ ip addr   # find your IP
 nmtui     # text UI to connect to WiFi
 ```
 
-### 3. Transfer the project
+### 3. Download the project onto the box
+
+Still at the box's own keyboard and monitor, type:
+
 ```bash
-git clone git@github.com:Drone-David/fpvlink.git ~/fpvlink
+sudo apt install -y git
+git clone https://github.com/Drone-David/fpvlink.git ~/fpvlink
 ```
+
+That copies this project into `/home/fpvlink/fpvlink` on the box.
+
+> **Why HTTPS and not `git@github.com:`?** The SSH form needs a key registered
+> with GitHub. HTTPS needs nothing. If you already have SSH keys set up and
+> prefer that form, use it — it makes no difference to what lands on the box.
+
+### 4. Connect from your own computer
+
+You can do everything from the keyboard plugged into the box, but a terminal on
+your own machine is easier — you can paste commands into it. This is SSH, and it
+is the only genuinely new idea in the setup.
+
+On the box, find its address:
+
+```bash
+ip addr
+```
+
+Look for a line like `inet 192.168.1.42/24` — that number is the box's address
+on your network. Then, on your own computer:
+
+- **macOS / Linux** — open Terminal
+- **Windows** — open PowerShell, or install [PuTTY](https://www.putty.org/)
+
+and run, substituting the address you just found:
+
+```bash
+ssh fpvlink@192.168.1.42
+```
+
+Say `yes` to the fingerprint question the first time, then enter the password you
+set for the `fpvlink` user. You are now typing on the box. Everything from here
+can be pasted into this window.
+
+> If it says `Connection refused`, SSH may not be installed on the box yet. At
+> the box's own keyboard run `sudo apt install -y openssh-server` and try again.
 
 ---
 
 ## Day 1: Software setup (run once)
 
-### Decide the box's identity first
-
-Every box needs a **unique hostname and AP SSID**. Two units answering to
-`fpvlink.local` on one network is not a cosmetic problem: `scripts/deploy.sh`
-targets that name by default, so a collision means you can push a build to the
-wrong box without noticing. Pick the identity before running step 5.
-
-| Box | `FPVLINK_HOSTNAME` | `FPVLINK_AP_SSID` | `FPVLINK_AP_CHANNEL` |
-|-----|--------------------|-------------------|----------------------|
-| 1   | `fpvlink`          | `FPVLink`         | `6`                  |
-| 2   | `fpvlink-2`        | `FPVLink-2`       | `1`                  |
-
-Addresses do **not** need to differ. The service port is 10.10.10.1 and the AP
-is 10.10.20.1 on every box by design — one address to remember, whichever unit
-your laptop is cabled into, and a client is only ever joined to one AP at a
-time. Only override `FPVLINK_SERVICE_IP` if you cable two boxes' service ports
-into the same switch.
+> **Building more than one box?** Each needs its own name, or they collide on
+> the network. Skip that for now — get one working first, then see
+> [Running more than one box](#running-more-than-one-box). If this is your only
+> box, the defaults are correct and you need to change nothing.
 
 ### Run the scripts in order
 
-SSH into the OPi 5 Plus:
+Seven scripts, in order, in the SSH window from step 4. Two of them need a reboot
+afterwards — when that happens, reconnect with the same `ssh` command and carry
+on from the next step.
+
+Every script is safe to re-run. If one fails partway, fix what it complains about
+and run it again; nothing gets into a half-finished state you cannot repeat.
+
+First, get into the project folder and make the scripts runnable:
 
 ```bash
 cd ~/fpvlink
 chmod +x setup/*.sh
-
-# 1. Install all system packages and kernel modules (~5 min)
-sudo ./setup/01-system.sh
-
-# 2. Configure USB-C port for OTG device mode (for Goggles 2)
-sudo ./setup/02-usb-otg.sh
-# --> REBOOT after this step
-sudo reboot
-
-# 3. After reboot: install and validate GStreamer rkmpp hardware codecs
-#    (also builds the 3D-LUT plugin via setup/build-lut-plugin.sh)
-sudo ./setup/03-gstreamer.sh
-
-# 4. Install fpvlink as a system service (npm install + pip install run here)
-sudo ./setup/04-service.sh
-
-# 5. Fixed service address + mDNS name. Set the hostname chosen above.
-#    -E is required so sudo passes the variable through.
-sudo -E FPVLINK_HOSTNAME=fpvlink-2 ./setup/05-network.sh
-
-# 6. Make the SD card survive an unclean shutdown. DO NOT SKIP — see below.
-sudo ./setup/06-filesystem.sh
-# --> REBOOT after this step (ext4 cannot change data mode on a remount)
-sudo reboot
-
-# 7. Optional: field WiFi AP (needs the TP-Link Archer T3U Nano plugged in).
-#    Prompts for a WPA2 passphrase if FPVLINK_AP_PASSPHRASE is unset.
-sudo -E FPVLINK_AP_SSID=FPVLink-2 FPVLINK_AP_CHANNEL=1 ./setup/07-wifi-ap.sh
 ```
+
+**1 · System packages and kernel modules** (~5 minutes)
+
+```bash
+sudo ./setup/01-system.sh
+```
+*Done when:* it ends without a red `[ERROR]` line. Warnings are fine.
+
+**2 · Put the USB-C port into device mode** — this is what lets Goggles 2 talk to
+the box at all.
+
+```bash
+sudo ./setup/02-usb-otg.sh
+sudo reboot
+```
+*The reboot is required.* Your SSH session will drop — that is expected. Wait a
+minute, then reconnect with the same `ssh fpvlink@…` command.
+
+**3 · Hardware video codecs** — installs GStreamer with Rockchip hardware decode
+and builds the colour-grading plugin.
+
+```bash
+sudo ./setup/03-gstreamer.sh
+```
+*Done when:* it reports the `rkmpp` plugin found. Verify it yourself in
+[Validate hardware codec](#validate-hardware-codec) below.
+
+**4 · Install FPVLink as a service** — installs dependencies and sets it to start
+on boot. **This one asks you a question:** a dashboard password. Press Enter to
+accept the standard one (`fpvlink12345`), or type your own.
+
+```bash
+sudo ./setup/04-service.sh
+```
+*Done when:* it prints that the service is active.
+
+**5 · Network name and fixed address** — gives the box the name `fpvlink` so you
+can reach it at `fpvlink.local` instead of hunting for an IP address.
+
+```bash
+sudo -E FPVLINK_HOSTNAME=fpvlink ./setup/05-network.sh
+```
+*Done when:* it prints the addresses the dashboard will answer on. From now on
+you can `ssh fpvlink@fpvlink.local` instead of using the numeric address.
+
+**6 · Protect the SD card from unclean shutdowns.** Do not skip this one — see
+the warning below.
+
+```bash
+sudo ./setup/06-filesystem.sh
+sudo reboot
+```
+*The reboot is required* (ext4 cannot change this setting on a live filesystem).
+Reconnect afterwards.
+
+**7 · Field WiFi access point** — *optional*, and only if you have the TP-Link
+Archer T3U Nano adapter plugged in. This lets a phone connect to the box directly
+at a flying field with no other network around. Skip it if you do not have the
+adapter; nothing else depends on it.
+
+```bash
+sudo ./setup/07-wifi-ap.sh
+```
+It will ask you for a WiFi password for the box's own network. Choose a real one
+— at a flying field this is the main thing keeping strangers off the dashboard.
 
 > **Step 6 is not optional on a fresh Armbian flash.** The stock image's ext4
 > superblock carries `journal_data_writeback` and `/etc/fstab` sets
@@ -164,8 +254,6 @@ sudo -E FPVLINK_AP_SSID=FPVLink-2 FPVLINK_AP_CHANNEL=1 ./setup/07-wifi-ap.sh
 > zero-filled `web/js/monitor.js`, and because `app.js` imports it, one
 > unparseable module took out the entire dashboard. `06-filesystem.sh` switches
 > the filesystem to `data=ordered` and drops `commit` back to the 5s default.
-
-Each script is idempotent — re-running one is safe.
 
 ### Validate hardware codec
 
@@ -178,7 +266,12 @@ gst-inspect-1.0 mppvideoenc   # not currently used by anything; reserved for a f
 
 ---
 
-## Day 1: Test the GStreamer pipeline
+## Optional: test the codecs without goggles
+
+**Skip this if you have goggles to hand** — plug them in and look at the HDMI
+output instead, which tests the real thing. This section is for confirming the
+board's video hardware works when your goggles have not arrived yet, or when you
+are trying to work out whether a problem is the box or the goggles.
 
 `pipeline/test_pipeline.sh` exercises the broader hardware pipeline capability (decode, encode, SRT/RTMP/record branches) independent of goggles input — useful for confirming the Pi's codecs and network output work before wiring anything to real hardware:
 
@@ -196,44 +289,31 @@ To confirm the actual live path works, connect goggles and check the HDMI output
 
 ---
 
-## Discover Goggles 2 USB descriptors (first-time hardware step)
-
-This is a one-time step to find the exact USB endpoints the Goggles 2 use.
-
-1. Connect the modified USB-C cable (5V cut) from Goggles 2 to OPi 5 Plus
-2. Power on the Goggles 2
-3. Run the discovery tool:
-
-```bash
-python3 capture/discover.py --watch
-```
-
-It will log everything the goggles send during USB enumeration. You'll see output like:
-
-```
-[+] Device connected: VID=2CA3 PID=001F  "DJI Goggles 2"
-    Interface 0 · class 0xFF · bulk
-      EP 0x01 OUT · bulk · 512 bytes
-      EP 0x81 IN  · bulk · 512 bytes
-    Handshake: [52 4D 56 54] received on EP 0x01
-```
-
-4. Note the VID, PID, and endpoint numbers
-5. Update `capture/goggles2.py` DESCRIPTOR_TEMPLATE with those values
-6. Restart the service
-
----
-
 ## Day 2: Watch the feed and monitor stats
 
 The pipeline is **always on** — as soon as `fpvlink.service` and `fpvlink-pipeline.service` are running, connecting goggles and powering them on is enough to get video on HDMI. There's no "Start" step for video output.
 
 1. Connect the goggles (see cable notes above) — the display shows a standby card until a live signal arrives, then switches automatically
-2. Open the dashboard on any device on the same network to monitor it:
+2. Open the dashboard on any device on the same network — phone, laptop,
+   anything with a browser:
 
 ```
-http://<OPI-IP>:8080
+http://fpvlink.local:8080
 ```
+
+   If that name does not resolve (some Android phones and older Windows do not
+   do mDNS), use the box's address instead — `http://192.168.1.42:8080`, with
+   whatever `ip addr` reported.
+
+   **It will ask for a password.** Unless you set your own during step 4, it is:
+
+```
+fpvlink12345
+```
+
+   Every box ships with the same one so you can walk up to any of them. See
+   [Security](#security) for when you should change it — short version: change it
+   if the box will be on a network you do not control.
 
 The dashboard shows live fps, bitrate, resolution, dropped-frame, and internal-latency stats reported by the pipeline every 2 seconds, plus a low-rate confidence preview (see [Live preview](#live-preview-working) below) — the real feed for actual use is still the HDMI output, not the browser; the dashboard preview is for confirming the chain is alive, not for monitoring picture quality.
 
@@ -398,6 +478,37 @@ around.
 
 ## Troubleshooting
 
+### Setup problems
+
+**`Permission denied (publickey)` when cloning** — you used the `git@github.com:`
+address. Use the HTTPS one in [step 3](#3-download-the-project-onto-the-box).
+
+**`ssh: connect to host … Connection refused`** — SSH is not running on the box.
+At the box's own keyboard: `sudo apt install -y openssh-server`.
+
+**`ssh: Could not resolve hostname fpvlink.local`** — mDNS is not working on your
+computer, or you have not run `05-network.sh` yet. Use the numeric address from
+`ip addr` instead. Both work identically.
+
+**`sudo: ./setup/01-system.sh: command not found`** — you are not in the project
+folder, or the scripts are not executable. Run `cd ~/fpvlink` and
+`chmod +x setup/*.sh` first.
+
+**`Permission denied` running a setup script** — you left off `sudo`. All seven
+need it.
+
+**The SSH session froze after a reboot step** — that is what a reboot does. Close
+the window, wait a minute, and `ssh fpvlink@fpvlink.local` again.
+
+**The dashboard asks for a password I do not have** — it is `fpvlink12345` unless
+you set your own during step 4. To change or check it on the box:
+`sudo nano /opt/fpvlink/system/fpvlink.env`, edit the `FPVLINK_PASSWORD` line,
+then `sudo systemctl restart fpvlink`.
+
+**The dashboard will not load at all** — check the service is running with
+`systemctl status fpvlink`. If it is, check you are on the same network as the
+box.
+
 ### Goggles 2 not detected
 1. Check `dmesg | grep -i usb` — look for enumeration activity
 2. Run `python3 capture/discover.py --watch` to see raw USB events
@@ -427,6 +538,49 @@ journalctl -u fpvlink-pipeline --no-pager -n 50
 
 ---
 
+## Advanced: rediscovering the Goggles 2 USB descriptors
+
+**Most people never need this.** The values for Goggles 2 / 3 / Integra / N3 are
+already built in, and goggles that enumerate normally will just work. Come here
+only if the goggles are not detected and [Troubleshooting](#troubleshooting) has
+not helped, or if you have a variant that reports different endpoints.
+
+It ends in editing a Python file, so it is the one part of setup that genuinely
+asks you to change code.
+
+This is a one-time step to find the exact USB endpoints the Goggles 2 use.
+
+1. Connect the modified USB-C cable (5V cut) from Goggles 2 to OPi 5 Plus
+2. Power on the Goggles 2
+3. Run the discovery tool:
+
+```bash
+python3 capture/discover.py --watch
+```
+
+It will log everything the goggles send during USB enumeration. You'll see output like:
+
+```
+[+] Device connected: VID=2CA3 PID=001F  "DJI Goggles 2"
+    Interface 0 · class 0xFF · bulk
+      EP 0x01 OUT · bulk · 512 bytes
+      EP 0x81 IN  · bulk · 512 bytes
+    Handshake: [52 4D 56 54] received on EP 0x01
+```
+
+4. Note the VID, PID, and endpoint numbers
+5. Open `capture/goggles2.py`, find `DESCRIPTOR_TEMPLATE` (near the top), and
+   change `ep_out_addr` and `ep_in_addr` to match what you saw. They are written
+   as hex, e.g. `0x01` and `0x82`
+6. Restart the service: `sudo systemctl restart fpvlink-pipeline`
+
+> **Do not edit `capture.usb_vid`, `usb_pid`, `ep_out` or `ep_in` in
+> `system/config.json` instead — nothing reads them.** Those fields are inert;
+> the values that matter are the ones in `goggles2.py` above. This is a known
+> wart, listed on the [Roadmap](#roadmap).
+
+---
+
 ## Deploying updates
 
 `scripts/deploy.sh` copies exactly what git tracks and verifies by checksum
@@ -444,6 +598,42 @@ FPVLINK_HOST=fpvlink-2.local scripts/deploy.sh # target the second box
 which unit you are pointed at — it names the host and changes nothing.
 
 ---
+
+## Running more than one box
+
+Every box needs a **unique hostname and AP SSID**. Two units answering to
+`fpvlink.local` on one network is not a cosmetic problem: `scripts/deploy.sh`
+targets that name by default, so a collision means you can push a build to the
+wrong box without noticing. Pick the identity before running step 5.
+
+| Box | `FPVLINK_HOSTNAME` | `FPVLINK_AP_SSID` | `FPVLINK_AP_CHANNEL` |
+|-----|--------------------|-------------------|----------------------|
+| 1   | `fpvlink`          | `FPVLink`         | `6`                  |
+| 2   | `fpvlink-2`        | `FPVLink-2`       | `1`                  |
+
+Addresses do **not** need to differ. The service port is 10.10.10.1 and the AP
+is 10.10.20.1 on every box by design — one address to remember, whichever unit
+your laptop is cabled into, and a client is only ever joined to one AP at a
+time. Only override `FPVLINK_SERVICE_IP` if you cable two boxes' service ports
+into the same switch.
+
+### Setting a second box's identity
+
+The identity is applied by steps 5 and 7 of [Run the scripts in
+order](#run-the-scripts-in-order). For box 2, substitute:
+
+```bash
+sudo -E FPVLINK_HOSTNAME=fpvlink-2 ./setup/05-network.sh
+```
+
+```bash
+sudo -E FPVLINK_AP_SSID=FPVLink-2 FPVLINK_AP_CHANNEL=1 ./setup/07-wifi-ap.sh
+```
+
+Everything else is identical to the first box. After that, `scripts/deploy.sh`
+targets a specific unit with `FPVLINK_HOST=fpvlink-2.local scripts/deploy.sh`.
+
+
 
 ## Project structure
 
@@ -472,6 +662,7 @@ fpvlink/
 
 ## Roadmap
 
+- [ ] Make the inert `config.json` fields real or remove them — `capture.usb_vid`, `usb_pid`, `ep_out`, `ep_in`, `web.allow_remote` and `web.port` are all read by nothing today, which makes the config file a trap
 - [ ] TLS for the dashboard, so the password is not sent in the clear on the field AP
 - [ ] RTSP output (needs `gst-rtsp-server`, a pull-based server architecture unlike SRT/RTMP's push sinks, and its own dashboard UI — not yet started)
 - [ ] Local recording
