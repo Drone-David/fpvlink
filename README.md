@@ -348,10 +348,11 @@ Push the goggles' own H.264 stream out over SRT or RTMP — no re-encode, so it 
 
 ### Live preview (working)
 
-The dashboard shows a low-rate (640×360, 15fps JPEG) confidence feed of whatever is on the HDMI output, so an operator can confirm their capture chain is alive from a phone or laptop without a separate hardware monitor. It shows the live feed when there's signal and the standby card when there isn't (so a frozen or "standby" preview is itself the "no signal" indicator), and the dashboard flags the preview **stale** if frames stop arriving entirely.
+The dashboard shows a low-rate (640×360 JPEG, capped at 15fps) confidence feed of whatever is on the HDMI output, so an operator can confirm their capture chain is alive from a phone or laptop without a separate hardware monitor. It shows the live feed when there's signal and the standby card when there isn't (so a frozen or "standby" preview is itself the "no signal" indicator), and the dashboard flags the preview **stale** if frames stop arriving entirely.
 
 - Taps the display `tee` exactly like the NDI branch and ends in a non-blocking `udpsink` (127.0.0.1:9002) → `server.js` rebroadcasts frames to dashboards over WebSocket. Unlike the SRT/RTMP sinks, `udpsink` is connectionless and can't stall the tee — verified in isolation that even a preview branch throttled ~10× below realtime leaves the display at full rate.
-- Always-on and unconditional (no toggle): a toggle would cost a ~3s HDMI blip to apply, and the whole point is a passive readout that's instantly there, never something you'd black out the feed to enable mid-event. Costs ~15% of one core for the JPEG encode.
+- Always-on and unconditional (no toggle): a toggle would cost a ~3s HDMI blip to apply, and the whole point is a passive readout that's instantly there, never something you'd black out the feed to enable mid-event.
+- The 15fps cap (`videorate max-rate=15`) sits **before** the 1080p→640×360 `videoscale`, which is the whole cost of this branch. Scaling first and dropping frames afterwards — the original order — made the scale run at the full 60fps: measured in isolation on the box, 48–50% of one core versus 17.8% capping first, for identical output. `max-rate` also means the branch never duplicates frames upward, so during standby (a 10fps card) it previews at a true 10fps for 2.3% of a core rather than inventing frames to hit 15.
 
 ### Internal latency readout (working)
 

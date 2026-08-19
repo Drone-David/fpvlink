@@ -499,10 +499,32 @@ LUT_SEGMENT = build_lut_segment(lut_enabled, lut_active_id)
 
 # Always-on low-rate confidence preview off the display tee (see the note above
 # build_pipeline_string for why this is safe and unconditional).
+#
+# THE RATE CAP MUST COME BEFORE videoscale. This branch used to read
+# `videoscale ! videorate`, and caps negotiation makes that ordering pay for the
+# 1920x1080 -> 640x360 scale at the FULL source rate and only then throw 3 of
+# every 4 frames away. Measured in isolation on the box (gst-launch, A76 cores
+# 4-7, baseline-subtracted, 1080p60 NV12 source): 48-50% of one core scaling
+# first vs 17.8% capping first, for the same delivered output — a 3x saving on
+# the always-on branch. On the A55 cluster the old order could not even sustain 60fps
+# (fell to 35); capping first holds 60 at ~41% of a core. Swapping jpegenc for
+# the hardware mppjpegenc buys nothing on top: the cost is the scale, not the
+# encode.
+#
+# `max-rate=15` rather than a `framerate=15/1` capsfilter, and no framerate in
+# the final caps, because videorate placed here also DUPLICATES frames upward to
+# satisfy a fixed rate. The standby branch feeds the tee at STANDBY_FPS (10), so
+# a fixed 15/1 would invent 5 frames a second and run the 1080p scale on them —
+# measured 8.3% of a core in standby vs 3.7% for the old order and 2.3% for this
+# one. That cost is paid continuously on a fanless box that idles between
+# flights (same reasoning as the standby LUT gating below), so it is worth the
+# one property. max-rate only ever drops: live still delivers a measured 15.1fps,
+# and standby now previews at its true 10fps instead of 15fps of which a third
+# were duplicates.
 PREVIEW_BRANCH = (
     "t. ! queue name=previewq max-size-buffers=2 leaky=downstream "
-    "! videoscale ! videorate ! videoconvert "
-    "! video/x-raw,format=I420,width=640,height=360,framerate=15/1 "
+    "! videorate max-rate=15 ! videoscale ! videoconvert "
+    "! video/x-raw,format=I420,width=640,height=360 "
     "! jpegenc quality=40 ! udpsink host=127.0.0.1 port=9002 sync=false"
 )
 
