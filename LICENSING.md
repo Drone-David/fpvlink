@@ -51,8 +51,7 @@ If FPVLink is useful to you and you want to support the work, GitHub Sponsors is
 the way. It is a straightforward donation: no tier buys support, priority, or
 influence over the roadmap, and nothing here is contingent on it.
 
-<!-- SPONSORS: uncomment the line in .github/FUNDING.yml once GitHub Sponsors is
-     enabled on the account, which adds a Sponsor button to the repo. -->
+[**github.com/sponsors/Drone-David**](https://github.com/sponsors/Drone-David)
 
 Issues and bug reports are welcome from everyone regardless, and always will be.
 Free support is best-effort — this is one person with one test box, so please
