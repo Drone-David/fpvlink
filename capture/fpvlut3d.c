@@ -642,6 +642,10 @@ plugin_init (GstPlugin * plugin)
       FPV_TYPE_LUT3D);
 }
 
+/* The license field takes one of a fixed set of strings GStreamer knows.
+ * FPVLink is under PolyForm Noncommercial 1.0.0, which is source-available
+ * but not a free-software license, so none of the free-license values apply
+ * and "Proprietary" is the honest bucket. See LICENSE. */
 GST_PLUGIN_DEFINE (GST_VERSION_MAJOR, GST_VERSION_MINOR,
     fpvlut3d, "FPVLink 3D LUT color grading",
-    plugin_init, "1.0", "MIT/X11", "fpvlink", "https://github.com/Drone-David/fpvlink")
+    plugin_init, "1.0", "Proprietary", "fpvlink", "https://github.com/Drone-David/fpvlink")
