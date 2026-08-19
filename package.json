@@ -2,7 +2,8 @@
   "name": "fpvlink",
   "version": "0.1.0",
   "description": "Low-latency FPV streaming device software for Orange Pi 5 Plus (RK3588)",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "private": true,
   "author": "David Escobar",
   "homepage": "https://github.com/Drone-David/fpvlink",
   "repository": {

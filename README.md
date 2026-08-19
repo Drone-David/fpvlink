@@ -435,13 +435,31 @@ fpvlink/
 
 ## License
 
-FPVLink is released under the [MIT License](LICENSE) — use it, modify it, build
-boxes with it, sell them.
+FPVLink is released under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). It is source-available, not
+open source — the distinction matters, so it is stated plainly here.
+
+**You may**, for any noncommercial purpose: download it, build a box for
+yourself, modify it, and share your changes. Hobby projects, amateur pursuits,
+personal study and private use are all explicitly permitted, as is use by
+charitable, educational, public research, public safety and government
+organizations.
+
+**You may not** sell it, sell boxes built on it, or use it commercially.
+Commercial rights are reserved to the copyright holder.
+
+**Want a box rather than a build?** Selling assembled units is exactly the case
+this licence reserves. Open an issue if you would rather buy one than source an
+Orange Pi and cut a USB-C cable. Commercial licensing enquiries go the same way.
 
 Bundled third-party material and the prior protocol work this builds on are
 credited in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The JetBrains Mono
 files under `web/fonts/` are OFL-1.1 and carry their own license file, which must
 travel with them if you fork.
+
+Contributions are welcome, under the terms in
+[CONTRIBUTING.md](CONTRIBUTING.md) — read it first, because it covers who ends
+up owning what.
 
 ### Not affiliated with DJI
 

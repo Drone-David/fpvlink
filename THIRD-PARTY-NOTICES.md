@@ -1,7 +1,13 @@
 # Third-party notices
 
-FPVLink itself is MIT licensed (see [LICENSE](LICENSE)). It bundles or builds on
-the following third-party work.
+FPVLink itself is under the PolyForm Noncommercial License 1.0.0 (see
+[LICENSE](LICENSE)) — source-available, noncommercial use only. That restriction
+is ours alone and does not extend to the third-party work below, which stays
+under its own terms. Note the asymmetry: the MIT and LGPL components here permit
+commercial use, so their licences are satisfied by attribution regardless of what
+FPVLink's own licence says.
+
+It bundles or builds on the following third-party work.
 
 ## Bundled in this repository
 
@@ -24,6 +30,10 @@ The browser-side WebUSB proof of concept that first demonstrated pulling video
 out of the DJI FPV Goggles V1/V2 over USB. The V1/V2 handshake in
 [`capture/v1v2.py`](capture/v1v2.py) — the `RMVT` magic write and the bulk
 endpoint layout — follows what that project established.
+
+MIT permits this, including in a noncommercially-licensed work, so long as the
+copyright notice and permission notice travel with it — which is what this
+section is for.
 
 ### DUML framing
 The Goggles 2/3/Integra/N3 path in [`capture/goggles2.py`](capture/goggles2.py)
