@@ -39,7 +39,9 @@ DEST="/opt/fpvlink"
 #   system/config.json — device-local runtime state (LUT selection, capture
 #     flags, output config). The one file where device and repo are MEANT to
 #     differ; copying it over would clobber live settings.
-#   scratch/ — research junk, and it contains a broken symlink that aborts rsync.
+#   scratch/ — no longer tracked at all (see .gitignore), so this pattern is now
+#     belt-and-braces: it keeps local research junk out of a deploy even if
+#     something under scratch/ is ever git-added again by accident.
 EXCLUDE_RE='^(system/config\.json|scratch/)'
 
 MODE="deploy"; FORCE=0

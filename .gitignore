@@ -37,3 +37,8 @@ replace_stream.py
 # Runtime-generated data (recreated automatically by server.js on startup)
 system/logs/
 system/luts/
+
+# Local scratch and third-party reference material.
+# Never publish: this tree has held vendor firmware dumps and other people's
+# copyrighted software, kept locally as reading material only.
+scratch/

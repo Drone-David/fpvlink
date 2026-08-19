@@ -124,16 +124,16 @@
   },
 
   "web": {
-    "_comment": "Embedded web UI / control API server (Node.js Express).",
+    "_comment": "Embedded web UI / control API server (Node.js Express). THERE IS NO AUTHENTICATION: anyone who can reach this port can change config, start and stop capture, and upload or delete LUTs. Treat reachability as full control of the box.",
 
     "port": 8080,
     "_port_comment": "TCP port for the web server. Can be overridden with FPVLINK_PORT env var.",
 
     "allow_remote": false,
-    "_allow_remote_comment": "If false, the web server binds to 127.0.0.1 only (localhost-only access). Set true to bind to 0.0.0.0 and allow access from other devices on the network. WARNING: there is no authentication yet; only enable this on a trusted network.",
+    "_allow_remote_comment": "NOT IMPLEMENTED — this field is read by nothing. web/server.js calls server.listen(PORT, '0.0.0.0') unconditionally, so the dashboard is ALWAYS reachable from every interface the box has, including the field WiFi AP, whatever this is set to. Do not rely on it to keep the box private. An earlier comment here claimed false meant localhost-only; that was never true. See the Security section of README.md.",
 
     "session_secret": "",
-    "_session_secret_comment": "Secret for signing session cookies. Leave empty to auto-generate on startup (sessions won't survive restarts). Set a fixed value for persistent sessions."
+    "_session_secret_comment": "NOT IMPLEMENTED — there are no sessions and no login. express-session is not a dependency and nothing reads this field. Kept only so the shape of the config does not change under anyone who already edited it."
   },
 
   "network": {
