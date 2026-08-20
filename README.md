@@ -23,14 +23,15 @@ comes back. Everything is a script you run in order; nothing here asks you to
 write code, and where a step needs a decision it says so.
 
 If you have never used a Linux terminal at all, the steps that will be new are
-**SSH** (connecting to the box from your own computer — explained in step 4) and
+**SSH** (connecting to the box from your own computer — explained in step 3) and
 `sudo` (running a command as administrator — just type it as written).
 
 Besides the parts list below you will need, for setup only:
 
 - **Another computer** — Mac, Windows or Linux — to flash the card and connect to the box
-- **A monitor and USB keyboard** for the first boot, before the box is on your network
-- **A network** the box can join, by Ethernet cable or WiFi
+- **An Ethernet cable** and a router to plug it into
+- *(Only if you cannot use Ethernet)* a monitor and USB keyboard for the first
+  boot — see [If you cannot use Ethernet](#if-you-cannot-use-ethernet)
 
 After setup the box runs headless: power and goggles, nothing else.
 
@@ -103,7 +104,7 @@ and everything else, for the life of the box.
 
 Two consequences worth knowing before you build one:
 
-- **Follow [`06-filesystem.sh`](#run-the-scripts-in-order) and do not skip it.** Running
+- **Follow [`06-filesystem.sh`](#or-run-the-scripts-in-order-yourself) and do not skip it.** Running
   the whole system from a card that gets powered off by unplugging it is exactly
   the situation that zeroed a source file and killed the dashboard once already.
 - **Video does not go here.** Root is ~29 GB with ~24 GB free, and at measured
@@ -137,67 +138,94 @@ Goggles 2  ──[modified end]── cable ──[intact end]── OPi 5 Plus 
 
 ## Day 1: Flash and first boot
 
+**No monitor or keyboard needed.** Armbian ships with SSH already switched on,
+and its first-login setup runs over SSH exactly as it does on a console — so
+the whole box can be set up from your own computer, over an Ethernet cable.
+
 ### 1. Flash Armbian
+
 1. Download [Armbian Bookworm CLI for Orange Pi 5 Plus](https://www.armbian.com/orange-pi-5-plus/)
 2. Flash to microSD with [Balena Etcher](https://www.balena.io/etcher/)
-3. Insert microSD into OPi 5 Plus, connect HDMI + keyboard + barrel-jack PSU
-4. Power on — first boot takes ~2 minutes (resizes filesystem)
-5. Set root password when prompted, create user `fpvlink`
+3. Insert the microSD, plug in **Ethernet**, then the barrel-jack PSU
+4. Power on — the first boot takes ~2 minutes, because it resizes the filesystem
 
-### 2. Get on your network
+Nothing needs to be edited on the card before you flash it.
+
+### 2. Find the box on your network
+
+It asks your router for an address as it boots. Any of these will find it:
+
+- **Your router's admin page** — look through the DHCP leases or "attached
+  devices" for a name beginning `orangepi`
+- **`arp -a`** on your own computer, run once before powering the box on and
+  once after, watching for the address that appears
+- **`nmap -sn 192.168.1.0/24`** — substitute your own network — which lists
+  everything currently answering
+
+Give it two or three minutes after power-on before you start worrying.
+
+### 3. First login (this is SSH)
+
+SSH is how you type on the box from your own machine, and it is the only
+genuinely new idea in this setup.
+
+- **macOS / Linux** — open Terminal
+- **Windows** — open PowerShell, or install [PuTTY](https://www.putty.org/)
+
+Then, substituting the address you just found:
+
 ```bash
-# Option A: Ethernet (recommended — plug in and it just works)
-ip addr   # find your IP
-
-# Option B: WiFi
-nmtui     # text UI to connect to WiFi
+ssh root@192.168.1.42
 ```
 
-### 3. Download the project onto the box
+Say `yes` to the fingerprint question, and give the password **`1234`** — that
+is Armbian's default, the same on every fresh flash. Armbian's first-login
+setup then runs and makes you:
 
-Still at the box's own keyboard and monitor, type:
+1. **Set a new root password.** The `1234` default stops working immediately;
+   nothing in FPVLink keeps or uses it.
+2. **Create a normal user.** Name it **`fpvlink`** — the rest of this README
+   assumes that name and the paths that follow from it.
+3. Pick a shell, timezone and locale. The defaults are fine.
+
+### 4. Reconnect as `fpvlink` and download the project
+
+The wizard leaves you in a root session, so drop out of it and come back as the
+user you just made:
+
+```bash
+exit
+ssh fpvlink@192.168.1.42
+```
+
+Then, on the box:
 
 ```bash
 sudo apt install -y git
 git clone https://github.com/Drone-David/fpvlink.git ~/fpvlink
 ```
 
-That copies this project into `/home/fpvlink/fpvlink` on the box.
+That copies this project into `/home/fpvlink/fpvlink` on the box. Everything
+from here can be pasted into this same window.
 
 > **Why HTTPS and not `git@github.com:`?** The SSH form needs a key registered
 > with GitHub. HTTPS needs nothing. If you already have SSH keys set up and
 > prefer that form, use it — it makes no difference to what lands on the box.
 
-### 4. Connect from your own computer
+### If you cannot use Ethernet
 
-You can do everything from the keyboard plugged into the box, but a terminal on
-your own machine is easier — you can paste commands into it. This is SSH, and it
-is the only genuinely new idea in the setup.
+WiFi cannot be configured before the box is reachable, so a WiFi-only setup
+needs a console for one step only. Connect HDMI and a USB keyboard, power on,
+log in as `root` with `1234`, complete the same wizard, and use its wireless
+prompt — or run `nmtui` afterwards — to join your network. Then unplug the
+monitor and keyboard and carry on from [step 2](#2-find-the-box-on-your-network).
 
-On the box, find its address:
-
-```bash
-ip addr
-```
-
-Look for a line like `inet 192.168.1.42/24` — that number is the box's address
-on your network. Then, on your own computer:
-
-- **macOS / Linux** — open Terminal
-- **Windows** — open PowerShell, or install [PuTTY](https://www.putty.org/)
-
-and run, substituting the address you just found:
-
-```bash
-ssh fpvlink@192.168.1.42
-```
-
-Say `yes` to the fingerprint question the first time, then enter the password you
-set for the `fpvlink` user. You are now typing on the box. Everything from here
-can be pasted into this window.
-
-> If it says `Connection refused`, SSH may not be installed on the box yet. At
-> the box's own keyboard run `sudo apt install -y openssh-server` and try again.
+Advanced alternative: Armbian can be preconfigured by writing WiFi credentials
+and an account into `/root/.not_logged_in_yet` on the card before first boot
+(see [Armbian's firstboot config](https://docs.armbian.com/User-Guide_Autoconfig/)).
+That file lives on the card's **ext4 root partition**, which macOS and Windows
+cannot write to without extra software, so in practice it is only convenient
+from a Linux machine.
 
 ---
 
@@ -583,10 +611,12 @@ around.
 ### Setup problems
 
 **`Permission denied (publickey)` when cloning** — you used the `git@github.com:`
-address. Use the HTTPS one in [step 3](#3-download-the-project-onto-the-box).
+address. Use the HTTPS one in [step 4](#4-reconnect-as-fpvlink-and-download-the-project).
 
-**`ssh: connect to host … Connection refused`** — SSH is not running on the box.
-At the box's own keyboard: `sudo apt install -y openssh-server`.
+**`ssh: connect to host … Connection refused`** — usually the box is still
+booting, or you have the wrong address. Wait a minute and try again, then
+re-check the address as in [step 2](#2-find-the-box-on-your-network). Armbian
+has SSH running from the first boot, so it is rarely the SSH server itself.
 
 **`ssh: Could not resolve hostname fpvlink.local`** — mDNS is not working on your
 computer, or you have not run `05-network.sh` yet. Use the numeric address from
@@ -723,7 +753,7 @@ into the same switch.
 ### Setting a second box's identity
 
 The identity is applied by steps 5 and 7 of [Run the scripts in
-order](#run-the-scripts-in-order). For box 2, substitute:
+order](#or-run-the-scripts-in-order-yourself). For box 2, substitute:
 
 ```bash
 sudo -E FPVLINK_HOSTNAME=fpvlink-2 ./setup/05-network.sh
