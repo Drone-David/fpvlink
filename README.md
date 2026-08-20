@@ -1,5 +1,7 @@
 # FPVLink
 
+[![Sponsor this project](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Drone-David)
+
 Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
 
 **Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional HDMI 3D LUT), with a web dashboard for live stats, a low-latency confidence preview, and an internal-latency readout. NDI and SRT/RTMP outputs are built and working on the bench, but are still **work in progress pending further field testing** — treat them as beta until this line says otherwise. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
@@ -719,6 +721,26 @@ fpvlink/
 - [ ] Multi-camera: V1/V2 on USB-A + Goggles 2 on USB-C simultaneously
 - [ ] Telemetry overlay (OSD from goggles data channel)
 - [ ] Mobile companion app
+
+---
+
+## Supporting the project
+
+FPVLink is free for noncommercial use and stays that way. If it is useful to
+you — it put goggles video on a screen at your club night, or saved you buying
+a commercial box — and you want to support the work:
+
+**[❤ Sponsor on GitHub → github.com/sponsors/Drone-David](https://github.com/sponsors/Drone-David)**
+
+Sponsoring is a plain donation: no tier buys support, priority, or influence
+over the roadmap, and nothing in this project is contingent on it —
+[LICENSING.md](LICENSING.md) says so explicitly. Issues and bug reports are
+welcome from everyone regardless.
+
+Two no-cost ways to help too: buying parts through the
+[affiliate links above](#hardware-you-need) earns the project a small
+commission at no extra cost to you, and a GitHub star helps other pilots
+find it.
 
 ---
 
