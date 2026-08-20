@@ -208,7 +208,52 @@ can be pasted into this window.
 > [Running more than one box](#running-more-than-one-box). If this is your only
 > box, the defaults are correct and you need to change nothing.
 
-### Run the scripts in order
+### The short way: one command
+
+`setup/install.sh` runs all seven scripts in the right order for you. It is a
+driver, not a replacement — it calls exactly the same scripts, and stops for
+anything it cannot do safely.
+
+```bash
+cd ~/fpvlink
+chmod +x setup/*.sh
+sudo ./setup/install.sh
+```
+
+It runs the three steps that need a reboot, tells you to reboot, and stops.
+Reconnect and run **the same command again** to finish:
+
+```bash
+sudo ./setup/install.sh
+```
+
+That is the whole setup: two commands and one reboot, instead of seven commands
+and two.
+
+- It asks you for a **dashboard password** in stage 2, and a **WiFi passphrase**
+  only if you have the access-point adapter plugged in. Nothing secret is
+  written to its progress file.
+- The field access point is set up **only if the adapter is present**. Force it
+  with `--with-ap`, or skip it with `--skip-ap`.
+- **If a step fails, fix what it reported and run the same command again** —
+  finished steps are skipped, so it resumes where it stopped.
+- `sudo ./setup/install.sh --status` shows what is done and what is left.
+- It will not start stage 2 until the box has genuinely rebooted, because
+  `03-gstreamer.sh` needs the USB device mode that only comes up on a fresh
+  boot. It checks the kernel's boot time rather than taking your word for it.
+
+For a completely unattended run, hand it the secrets up front:
+
+```bash
+sudo FPVLINK_PASSWORD='your-password' FPVLINK_HOSTNAME=fpvlink ./setup/install.sh --yes
+```
+
+Everything below is what that command does. Read it if you want to know what is
+happening to your box, run the scripts yourself if you would rather drive, and
+skip to [Validate hardware codec](#validate-hardware-codec) if the installer
+already finished.
+
+### Or run the scripts in order yourself
 
 Seven scripts, in order, in the SSH window from step 4. Two of them need a reboot
 afterwards — when that happens, reconnect with the same `ssh` command and carry
@@ -697,7 +742,8 @@ targets a specific unit with `FPVLINK_HOST=fpvlink-2.local scripts/deploy.sh`.
 
 ```
 fpvlink/
-├── setup/          One-time setup scripts 01-07 (run on OPi 5 Plus), incl.
+├── setup/          One-time setup scripts 01-07 (run on OPi 5 Plus), driven
+│                   by install.sh (runs them in order, resumable), incl.
 │                   05-network.sh (per-box hostname/service IP),
 │                   06-filesystem.sh (SD-card writeback fix — mandatory) and
 │                   build-lut-plugin.sh (compiles capture/fpvlut3d.c)
