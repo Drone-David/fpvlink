@@ -2,7 +2,7 @@
 
 [![Sponsor this project](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Drone-David)
 
-Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
+Low-latency HDMI out from DJI FPV goggles, for live viewing and live streaming setups. Built on the Orange Pi 5 Plus (RK3588).
 
 **Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional HDMI 3D LUT), with a web dashboard for live stats, a low-latency confidence preview, and an internal-latency readout. NDI and SRT/RTMP outputs are built and working on the bench, but are still **work in progress pending further field testing** — treat them as beta until this line says otherwise. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
 
