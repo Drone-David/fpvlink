@@ -2,11 +2,12 @@
 
 Always-on HDMI output device for DJI FPV goggles, built on the Orange Pi 5 Plus (RK3588).
 
-**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional NDI network output, HDMI 3D LUT, and SRT/RTMP passthrough), with a web dashboard for live stats, a low-latency confidence preview, and an internal-latency readout. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
+**Current state:** goggles → USB capture → hardware H.264 decode → HDMI out (+ optional HDMI 3D LUT), with a web dashboard for live stats, a low-latency confidence preview, and an internal-latency readout. NDI and SRT/RTMP outputs are built and working on the bench, but are still **work in progress pending further field testing** — treat them as beta until this line says otherwise. RTSP and local recording are **not active** in the running pipeline yet — see [Current architecture](#current-architecture) and [Roadmap](#roadmap).
 
 **Supported goggles:** DJI Goggles 2 / 3 / Integra / N3 · DJI FPV Goggles V1/V2
 **Output today:** HDMI (direct KMS/DRM, hardware decode)
-**Output working:** HDMI · NDI (LAN, for OBS/vMix/NDI Studio Monitor) · HDMI 3D LUT · SRT · RTMP · dashboard live preview
+**Output working:** HDMI · HDMI 3D LUT · dashboard live preview · internal-latency readout
+**Output in field testing (work in progress):** NDI (LAN, for OBS/vMix/NDI Studio Monitor) · SRT · RTMP
 **Output planned, not yet wired up:** Local recording · RTSP
 
 > **Security:** the dashboard requires a password, set during setup. It still
@@ -30,6 +31,45 @@ Besides the parts list below you will need, for setup only:
 - **A network** the box can join, by Ethernet cable or WiFi
 
 After setup the box runs headless: power and goggles, nothing else.
+
+---
+
+## How this compares
+
+There is one direct commercial alternative:
+[Cosmostreamer](https://cosmostreamer.com/products/djigoggles2), a Raspberry
+Pi 4B-based box doing the same job — DJI goggles in over USB, HDMI and network
+streams out. The comparison below is against their Goggles 2/3/Integra/N3
+product, using their published information **as of August 2026** — check their
+site for current details, and read their column as their claims, not our
+measurements.
+
+| | FPVLink | Cosmostreamer |
+|---|---|---|
+| Price | Software is free for noncommercial use; you source ~$90–130 of parts and build it yourself | $150 DIY license key, $295 pre-built box, $349 with 4.3" screen; extra licenses $50 |
+| Source | Source-available — read it, modify it, fix it yourself ([license](#license)) | Proprietary firmware, license-keyed |
+| Hardware | Orange Pi 5 Plus (RK3588), hardware H.264 decode, zero-copy NV12 to HDMI | Raspberry Pi 4B |
+| Goggles support | Goggles 2 / 3 / Integra / N3 and V1/V2 in one build | Same coverage, split across products/licenses |
+| HDMI out | Working, event-proven (0 dropped frames over a 14-race event) | Working ("ultra-low latency") |
+| Latency | Measured and published: ~38ms median box-added latency across a live 14-race event, with a live readout on the dashboard | Described as "ultra-low"; no figures published |
+| Network outputs | NDI, SRT, RTMP — built, still in field testing | RTSP, SRT, RTMP, RTP, MPEG-TS, NDI, NDI\|HX, raw UDP H.264 |
+| Color grading | HDMI 3D LUT (`.cube` upload from the dashboard) | Not offered |
+| Field use | Built-in WiFi AP mode (box is its own hotspot at the field) | WiFi client 2.4/5GHz |
+| Telemetry / OSD | Planned, not started | Telemetry overlay, remote camera settings, MQTT re-streaming, Avata gimbal control |
+| Buy it assembled | No — this is a build-it-yourself project | Yes |
+
+The honest summary: **Cosmostreamer is a finished product you can buy today
+with a broader protocol list; FPVLink is a project you build**, in exchange for
+which you get the source, stronger decode hardware, published measured
+performance instead of adjectives, and features aimed at running events (LUT
+grading, latency readout, field AP, multi-box deploys).
+
+There is also a **free alternative that needs no box at all**: DJI goggles can
+output video over USB-C to a phone or laptop
+([how-to](https://oscarliang.com/dji-fpv-goggles-video-out/)). If you just want
+to occasionally show a friend your feed, do that. FPVLink is for when the
+output needs to be an always-on appliance — powered on, HDMI live, no phone
+tied up, no app in the loop.
 
 ---
 
@@ -317,11 +357,15 @@ fpvlink12345
 
 The dashboard shows live fps, bitrate, resolution, dropped-frame, and internal-latency stats reported by the pipeline every 2 seconds, plus a low-rate confidence preview (see [Live preview](#live-preview-working) below) — the real feed for actual use is still the HDMI output, not the browser; the dashboard preview is for confirming the chain is alive, not for monitoring picture quality.
 
-The dashboard's **NDI**, **HDMI 3D LUT**, and **SRT/RTMP** controls are all wired up and work (see below).
+The dashboard's **HDMI 3D LUT** control is wired up and works. The **NDI** and **SRT/RTMP** controls are wired up too, but those outputs are still **work in progress — they run on the bench and need more field testing** before they can be called done (see below).
 
-### NDI output (working)
+### NDI output (work in progress — needs field testing)
 
 Enable the **NDI Output** toggle in the dashboard (and optionally set a source name). The pipeline broadcasts a low-latency NDI source on your LAN, tapped straight off the decoded feed (no extra color conversion). It's auto-discovered by OBS (NDI plugin), vMix, and NDI Studio Monitor as `<hostname> (<name>)`.
+
+> **Status:** works on the bench, but has not yet been run through a full live
+> event. Until it has, treat it as beta — don't make it the only path your
+> video takes on a night that matters.
 
 - Toggling NDI restarts the pipeline to apply, so expect a ~3s standby blip on the HDMI output.
 - The NDI source stays alive across live↔standby, so receivers always see a picture.
@@ -338,9 +382,9 @@ Apply a `.cube` color-grading LUT to the HDMI output. In the dashboard, open **H
 - Fail-safe: if the plugin isn't built or the `.cube` file is missing, the pipeline logs it and shows an **ungraded** picture rather than blacking out HDMI.
 - Config: `hdmi_lut_enabled` and `hdmi_lut_active_id` (top-level in `system/config.json`); LUT files and their manifest live under `system/luts/`. The dashboard manages all of this.
 
-### SRT / RTMP output (working)
+### SRT / RTMP output (work in progress — needs field testing)
 
-Push the goggles' own H.264 stream out over SRT or RTMP — no re-encode, so it costs muxing only, not CPU/NPU. Enable **SRT Output** / **RTMP Output** in the dashboard and set a URL (`srt://host:port`, or `rtmp://host/app` plus a stream key for Twitch/YouTube-style targets — the key is appended as a URL path segment at connect time and never stored joined into the URL).
+Push the goggles' own H.264 stream out over SRT or RTMP — no re-encode, so it costs muxing only, not CPU/NPU. Like NDI above, this **works on the bench but hasn't been proven at a live event yet** — beta until it has. Enable **SRT Output** / **RTMP Output** in the dashboard and set a URL (`srt://host:port`, or `rtmp://host/app` plus a stream key for Twitch/YouTube-style targets — the key is appended as a URL path segment at connect time and never stored joined into the URL).
 
 - Runs in its own process (`capture/stream_output.py`, service `fpvlink-stream`), **not** inside the always-on display pipeline. An earlier version tried tapping SRT/RTMP off a tee in `capture/pipeline.py`, mirroring the NDI branch — it reproducibly broke HDMI: a stalled or unreachable `rtmpsink` hung the *entire* tee, not just its own branch, because GStreamer's query/state-sync machinery propagates synchronously through a pipeline (including through queue elements, which only decouple buffer data, not queries). A bad remote target must never be able to take down the display, so SRT/RTMP now run as a separate OS process, fed a copy of the H.264 bytestream over a small internal relay socket. If that process hangs or crashes, systemd restarts just it — HDMI is structurally unaffected.
 - Changing SRT/RTMP settings restarts only `fpvlink-stream` (not the display pipeline) to apply.
@@ -665,6 +709,7 @@ fpvlink/
 
 ## Roadmap
 
+- [ ] Field-test NDI and SRT/RTMP at live events (both work on the bench; neither has been through a full event yet)
 - [ ] TLS for the dashboard, so the password is not sent in the clear on the field AP
 - [ ] RTSP output (needs `gst-rtsp-server`, a pull-based server architecture unlike SRT/RTMP's push sinks, and its own dashboard UI — not yet started)
 - [ ] Local recording
