@@ -357,9 +357,18 @@ fpvlink12345
    [Security](#security) for when you should change it — short version: change it
    if the box will be on a network you do not control.
 
+![FPVLink dashboard — Monitor tab](docs/images/dashboard-monitor.png)
+
+*The Monitor tab. Telemetry shown is from the 2026-08-04 14-race event: 1080p60
+at 9.5 Mbps, 38 ms internal latency, zero dropped frames.*
+
 The dashboard shows live fps, bitrate, resolution, dropped-frame, and internal-latency stats reported by the pipeline every 2 seconds, plus a low-rate confidence preview (see [Live preview](#live-preview-working) below) — the real feed for actual use is still the HDMI output, not the browser; the dashboard preview is for confirming the chain is alive, not for monitoring picture quality.
 
 The dashboard's **HDMI 3D LUT** control is wired up and works. The **NDI** and **SRT/RTMP** controls are wired up too, but those outputs are still **work in progress — they run on the bench and need more field testing** before they can be called done (see below).
+
+The **Outputs** tab is where every destination is switched on and configured:
+
+![FPVLink dashboard — Outputs tab](docs/images/dashboard-outputs.png)
 
 ### NDI output (work in progress — needs field testing)
 
